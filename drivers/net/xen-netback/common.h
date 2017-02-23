@@ -135,6 +135,24 @@ struct xenvif_copy_state {
 	struct sk_buff_head *completed;
 };
 
+/* This is the maximum number of grefs per queue in the grant cache. */
+#define XEN_NETBK_MAX_GREF_MAPPING_SIZE 1024
+
+struct xenvif_grant {
+	grant_ref_t ref;
+	grant_handle_t handle;
+	uint32_t flags;
+	struct page *page;
+	struct hlist_node node;
+	atomic_t refcount;
+};
+
+struct xenvif_grant_mapping {
+	struct hlist_head entries[XEN_NETBK_MAX_GREF_MAPPING_SIZE];
+	unsigned int count;
+	void *opaque;
+};
+
 struct xenvif_queue { /* Per-queue data for xenvif */
 	unsigned int id; /* Queue ID, 0-based */
 	char name[QUEUE_NAME_SIZE]; /* DEVNAME-qN */
@@ -200,6 +218,9 @@ struct xenvif_queue { /* Per-queue data for xenvif */
 	struct timer_list credit_timeout;
 	u64 credit_window_start;
 	bool rate_limited;
+
+	/* Static Grant Mappings */
+	struct xenvif_grant_mapping grant;
 
 	/* Statistics */
 	struct xenvif_stats stats;
@@ -381,6 +402,7 @@ extern unsigned int rx_drain_timeout_msecs;
 extern unsigned int rx_stall_timeout_msecs;
 extern unsigned int xenvif_max_queues;
 extern unsigned int xenvif_hash_cache_size;
+extern unsigned int xenvif_gref_mapping_size;
 
 #ifdef CONFIG_DEBUG_FS
 extern struct dentry *xen_netback_dbg_root;
@@ -408,8 +430,22 @@ u32 xenvif_set_hash_mapping(struct xenvif *vif, u32 gref, u32 len,
 
 void xenvif_set_skb_hash(struct xenvif *vif, struct sk_buff *skb);
 
+/* Static Grant Mappings */
+void xenvif_init_grant(struct xenvif_queue *queue);
+void xenvif_deinit_grant(struct xenvif_queue *queue);
+struct xenvif_grant *xenvif_get_grant(struct xenvif_queue *queue,
+				      grant_ref_t ref);
+void xenvif_put_grant(struct xenvif_queue *queue, struct xenvif_grant *grant);
+
+u32 xenvif_add_gref_mapping(struct xenvif *vif, u32 queue_id, grant_ref_t ref,
+			    u32 size);
+u32 xenvif_put_gref_mapping(struct xenvif *vif, u32 queue_id, grant_ref_t ref,
+			    u32 size);
+u32 xenvif_get_gref_mapping_size(struct xenvif *vif, u32 queue_id, u32 *num);
+
 #ifdef CONFIG_DEBUG_FS
 void xenvif_dump_hash_info(struct xenvif *vif, struct seq_file *m);
+void xenvif_dump_grant_info(struct xenvif_queue *queue, struct seq_file *m);
 #endif
 
 #endif /* __XEN_NETBACK__COMMON_H__ */
