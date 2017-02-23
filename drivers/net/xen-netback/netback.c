@@ -96,6 +96,12 @@ unsigned int xenvif_hash_cache_size = XENVIF_HASH_CACHE_SIZE_DEFAULT;
 module_param_named(hash_cache_size, xenvif_hash_cache_size, uint, 0644);
 MODULE_PARM_DESC(hash_cache_size, "Number of flows in the hash cache");
 
+/* This is the maximum number of flows in the hash cache. */
+#define XENVIF_GREF_MAPPING_SIZE_DEFAULT 768
+unsigned int xenvif_gref_mapping_size = XENVIF_GREF_MAPPING_SIZE_DEFAULT;
+module_param_named(gref_mapping_size, xenvif_gref_mapping_size, uint, 0644);
+MODULE_PARM_DESC(gref_mapping_size, "Number of grefs in the mapping table");
+
 static void xenvif_idx_release(struct xenvif_queue *queue, u16 pending_idx,
 			       u8 status);
 
@@ -1564,6 +1570,22 @@ static void process_ctrl_request(struct xenvif *vif,
 		status = xenvif_set_hash_mapping(vif, req->data[0],
 						 req->data[1],
 						 req->data[2]);
+		break;
+	case XEN_NETIF_CTRL_TYPE_GET_GREF_MAPPING_SIZE:
+		status = xenvif_get_gref_mapping_size(vif, req->data[0],
+						      &data);
+		break;
+	case XEN_NETIF_CTRL_TYPE_ADD_GREF_MAPPING:
+		status = xenvif_add_gref_mapping(vif, req->data[0],
+						 req->data[1],
+						 req->data[2],
+						 &data);
+		break;
+	case XEN_NETIF_CTRL_TYPE_DEL_GREF_MAPPING:
+		status = xenvif_del_gref_mapping(vif, req->data[0],
+						 req->data[1],
+						 req->data[2],
+						 &data);
 		break;
 
 	default:
