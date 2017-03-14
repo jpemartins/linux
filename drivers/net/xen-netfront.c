@@ -99,6 +99,10 @@ struct netfront_stats {
 	struct u64_stats_sync	syncp;
 };
 
+struct netfront_queue_stats {
+	u64	rx_gso_checksum_fixup;
+};
+
 struct netfront_info;
 
 struct netfront_buffer {
@@ -121,6 +125,7 @@ struct netfront_queue {
 	unsigned int id; /* Queue ID, 0-based */
 	char name[QUEUE_NAME_SIZE]; /* DEVNAME-qN */
 	struct netfront_info *info;
+	struct netfront_queue_stats stats;
 
 	struct napi_struct napi;
 
@@ -191,8 +196,6 @@ struct netfront_info {
 	/* Statistics */
 	struct netfront_stats __percpu *rx_stats;
 	struct netfront_stats __percpu *tx_stats;
-
-	atomic_t rx_gso_checksum_fixup;
 };
 
 struct netfront_rx_info {
@@ -958,7 +961,7 @@ static RING_IDX xennet_fill_frags(struct netfront_queue *queue,
 	return cons;
 }
 
-static int checksum_setup(struct net_device *dev, struct sk_buff *skb)
+static int checksum_setup(struct netfront_queue *queue, struct sk_buff *skb)
 {
 	bool recalculate_partial_csum = false;
 
@@ -969,8 +972,9 @@ static int checksum_setup(struct net_device *dev, struct sk_buff *skb)
 	 * recalculate the partial checksum.
 	 */
 	if (skb->ip_summed != CHECKSUM_PARTIAL && skb_is_gso(skb)) {
-		struct netfront_info *np = netdev_priv(dev);
-		atomic_inc(&np->rx_gso_checksum_fixup);
+		struct netfront_queue_stats *q_stats = &queue->stats;
+
+		q_stats->rx_gso_checksum_fixup++;
 		skb->ip_summed = CHECKSUM_PARTIAL;
 		recalculate_partial_csum = true;
 	}
@@ -999,7 +1003,7 @@ static int handle_incoming_queue(struct netfront_queue *queue,
 		skb->protocol = eth_type_trans(skb, queue->info->netdev);
 		skb_reset_network_header(skb);
 
-		if (checksum_setup(queue->info->netdev, skb)) {
+		if (checksum_setup(queue, skb)) {
 			kfree_skb(skb);
 			packets_dropped++;
 			queue->info->netdev->stats.rx_errors++;
@@ -2428,7 +2432,7 @@ static const struct xennet_stat {
 } xennet_stats[] = {
 	{
 		"rx_gso_checksum_fixup",
-		offsetof(struct netfront_info, rx_gso_checksum_fixup)
+		offsetof(struct netfront_queue_stats, rx_gso_checksum_fixup)
 	},
 };
 
@@ -2445,11 +2449,16 @@ static int xennet_get_sset_count(struct net_device *dev, int string_set)
 static void xennet_get_ethtool_stats(struct net_device *dev,
 				     struct ethtool_stats *stats, u64 * data)
 {
-	void *np = netdev_priv(dev);
-	int i;
+	struct netfront_info *np = netdev_priv(dev);
+	void *qstats;
+	int i, j;
 
-	for (i = 0; i < ARRAY_SIZE(xennet_stats); i++)
-		data[i] = atomic_read((atomic_t *)(np + xennet_stats[i].offset));
+	for (i = 0; i < ARRAY_SIZE(xennet_stats); i++) {
+		for (j = 0; j < dev->real_num_tx_queues; ++j) {
+			qstats = &np->queues[j].stats;
+			data[i] += *((u64 *)(qstats + xennet_stats[i].offset));
+		}
+	}
 }
 
 static void xennet_get_strings(struct net_device *dev, u32 stringset, u8 * data)
