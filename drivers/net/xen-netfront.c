@@ -104,6 +104,9 @@ struct netfront_stats {
 	struct u64_stats_sync	syncp;
 
 	u64	rx_gso_checksum_fixup;
+	u64	rx_alloc_pages;
+	u64	rx_alloc_failed_pages;
+	u64	rx_packet_pages;
 };
 
 struct netfront_info;
@@ -352,13 +355,20 @@ static void xennet_maybe_wake_tx(struct netfront_queue *queue)
 
 static struct page *xennet_alloc_page(struct netfront_queue *queue)
 {
+	struct netfront_stats *rx_stats = this_cpu_ptr(queue->info->rx_stats);
 	struct page *page = NULL;
+
+	rx_stats->rx_packet_pages++;
 
 	page = get_buf_from_pool(&queue->rx_pool);
 	if (likely(page))
 		return page;
 
 	page = alloc_page(GFP_ATOMIC | __GFP_NOWARN);
+	if (likely(page))
+		rx_stats->rx_alloc_pages++;
+	else
+		rx_stats->rx_alloc_failed_pages++;
 	return page;
 }
 
@@ -2557,6 +2567,9 @@ static const struct xennet_stat {
 	u16 offset;
 } xennet_stats[] = {
 	{ XENNET_STAT(rx_gso_checksum_fixup) },
+	{ XENNET_STAT(rx_alloc_pages) },
+	{ XENNET_STAT(rx_alloc_failed_pages) },
+	{ XENNET_STAT(rx_packet_pages) },
 };
 
 static int xennet_get_sset_count(struct net_device *dev, int string_set)
