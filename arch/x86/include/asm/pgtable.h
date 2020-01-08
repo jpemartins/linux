@@ -259,7 +259,7 @@ static inline int pmd_large(pmd_t pte)
 /* NOTE: when predicate huge page, consider also pmd_devmap, or use pmd_large */
 static inline int pmd_trans_huge(pmd_t pmd)
 {
-	return (pmd_val(pmd) & (_PAGE_PSE|_PAGE_DEVMAP)) == _PAGE_PSE;
+	return (pmd_val(pmd) & (_PAGE_PSE|_PAGE_DEVMAP|_PAGE_SPECIAL)) == _PAGE_PSE;
 }
 
 #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
@@ -297,6 +297,12 @@ static inline int pgd_devmap(pgd_t pgd)
 {
 	return 0;
 }
+
+static inline bool pmd_special(pmd_t pmd)
+{
+	return !!(pmd_flags(pmd) & _PAGE_SPECIAL);
+}
+
 #endif
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
@@ -450,6 +456,11 @@ static inline pmd_t pmd_mkdirty(pmd_t pmd)
 static inline pmd_t pmd_mkdevmap(pmd_t pmd)
 {
 	return pmd_set_flags(pmd, _PAGE_DEVMAP);
+}
+
+static inline pmd_t pmd_mkspecial(pmd_t pmd)
+{
+	return pmd_set_flags(pmd, _PAGE_SPECIAL);
 }
 
 static inline pmd_t pmd_mkhuge(pmd_t pmd)
