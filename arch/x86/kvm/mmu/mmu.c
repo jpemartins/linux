@@ -3219,7 +3219,8 @@ static int host_pfn_mapping_level(struct kvm_vcpu *vcpu, gfn_t gfn,
 	pte_t *pte;
 	int level;
 
-	if (!PageCompound(pfn_to_page(pfn)) && !kvm_is_zone_device_pfn(pfn))
+	if (pfn_valid(pfn) &&
+	    !PageCompound(pfn_to_page(pfn)) && !kvm_is_zone_device_pfn(pfn))
 		return PG_LEVEL_4K;
 
 	/*
@@ -3251,7 +3252,7 @@ static int kvm_mmu_hugepage_adjust(struct kvm_vcpu *vcpu, gfn_t gfn,
 	if (unlikely(max_level == PG_LEVEL_4K))
 		return PG_LEVEL_4K;
 
-	if (is_error_noslot_pfn(pfn) || kvm_is_reserved_pfn(pfn))
+	if (is_error_noslot_pfn(pfn))
 		return PG_LEVEL_4K;
 
 	slot = gfn_to_memslot_dirty_bitmap(vcpu, gfn, true);
