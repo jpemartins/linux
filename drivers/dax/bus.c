@@ -379,6 +379,9 @@ static void free_dev_dax_ranges(struct dev_dax *dev_dax)
 
 		__release_region(&dax_region->res, range->start,
 				range_len(range));
+
+		if (dax_is_pfn_special(dev_dax))
+			arch_io_free_memtype_wb(range->start, range->end);
 	}
 	dev_dax->nr_range = 0;
 }

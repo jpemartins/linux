@@ -15,12 +15,6 @@
 #include "dax-private.h"
 #include "bus.h"
 
-static int dax_is_pfn_special(struct dev_dax *dev_dax)
-{
-	return (dev_dax->pfn_flags &
-		(PFN_DEV|PFN_SPECIAL)) == (PFN_DEV|PFN_SPECIAL);
-}
-
 static int dax_is_pfn_map(struct dev_dax *dev_dax)
 {
 	return (dev_dax->pfn_flags &
@@ -487,6 +481,10 @@ int dev_dax_probe(struct dev_dax *dev_dax)
 		/* don't update the range for static pgmap */
 		if (!dev_dax->pgmap && pgmap)
 			pgmap->ranges[i] = *range;
+
+		if (dax_is_pfn_special(dev_dax) &&
+		    arch_io_reserve_memtype_wb(range->start, range->end))
+			return -EBUSY;
 	}
 
 	if (dax_is_pfn_map(dev_dax)) {

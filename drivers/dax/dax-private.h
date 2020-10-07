@@ -107,4 +107,10 @@ static inline bool dax_align_valid(unsigned long align)
 	return align == PAGE_SIZE;
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+
+static inline int dax_is_pfn_special(struct dev_dax *dev_dax)
+{
+	return (dev_dax->pfn_flags &
+		(PFN_DEV|PFN_SPECIAL)) == (PFN_DEV|PFN_SPECIAL);
+}
 #endif

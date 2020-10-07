@@ -389,6 +389,9 @@ extern void arch_phys_wc_del(int handle);
 extern int arch_io_reserve_memtype_wc(resource_size_t start, resource_size_t size);
 extern void arch_io_free_memtype_wc(resource_size_t start, resource_size_t size);
 #define arch_io_reserve_memtype_wc arch_io_reserve_memtype_wc
+extern int arch_io_reserve_memtype_wb(resource_size_t start, resource_size_t size);
+extern void arch_io_free_memtype_wb(resource_size_t start, resource_size_t size);
+#define arch_io_reserve_memtype_wb arch_io_reserve_memtype_wb
 #endif
 
 extern bool arch_memremap_can_ram_remap(resource_size_t offset,
