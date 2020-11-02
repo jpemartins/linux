@@ -26,6 +26,7 @@
 #include <linux/pci.h>
 #include <linux/pci-ats.h>
 #include <linux/platform_device.h>
+#include <uapi/linux/iommufd.h>
 
 #include "arm-smmu-v3.h"
 #include "../../dma-iommu.h"
@@ -2880,10 +2881,28 @@ static void arm_smmu_remove_dev_pasid(struct device *dev, ioasid_t pasid)
 	arm_smmu_sva_remove_dev_pasid(domain, dev, pasid);
 }
 
+
+static struct iommu_domain *
+arm_smmu_domain_alloc_user(struct device *dev, u32 flags)
+{
+	bool enforce_dirty = flags & IOMMU_HWPT_ALLOC_ENFORCE_DIRTY;
+	struct arm_smmu_master *master = dev_iommu_priv_get(dev);
+	unsigned type = IOMMU_DOMAIN_UNMANAGED;
+
+	if (!master)
+		return ERR_PTR(-ENODEV);
+
+	if (flags & IOMMU_HWPT_ALLOC_NEST_PARENT)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	return arm_smmu_domain_alloc(type);
+}
+
 static struct iommu_ops arm_smmu_ops = {
 	.capable		= arm_smmu_capable,
 	.hw_info		= arm_smmu_hw_info,
 	.domain_alloc		= arm_smmu_domain_alloc,
+	.domain_alloc_user	= arm_smmu_domain_alloc_user,
 	.probe_device		= arm_smmu_probe_device,
 	.release_device		= arm_smmu_release_device,
 	.device_group		= arm_smmu_device_group,
