@@ -1958,6 +1958,7 @@ static struct iommu_domain *__iommu_domain_alloc(struct bus_type *bus,
 	domain->type = type;
 	/* Assume all sizes by default; the driver may override this later */
 	domain->pgsize_bitmap  = bus->iommu_ops->pgsize_bitmap;
+	mutex_init(&domain->switch_log_lock);
 
 	if (iommu_is_dma_domain(domain) && iommu_get_dma_cookie(domain)) {
 		iommu_domain_free(domain);
@@ -2789,6 +2790,120 @@ int iommu_set_pgtable_quirks(struct iommu_domain *domain,
 	return domain->ops->set_pgtable_quirks(domain, quirk);
 }
 EXPORT_SYMBOL_GPL(iommu_set_pgtable_quirks);
+
+bool iommu_support_dirty_log(struct iommu_domain *domain)
+{
+	const struct iommu_ops *ops = domain->ops;
+
+	return ops->support_dirty_log && ops->support_dirty_log(domain);
+}
+EXPORT_SYMBOL_GPL(iommu_support_dirty_log);
+
+int iommu_switch_dirty_log(struct iommu_domain *domain, bool enable,
+			   unsigned long iova, size_t size, int prot)
+{
+	const struct iommu_ops *ops = domain->ops;
+	unsigned long orig_iova = iova;
+	unsigned int min_pagesz;
+	size_t orig_size = size;
+	bool flush = false;
+	int ret = 0;
+
+	if (unlikely(!ops->switch_dirty_log))
+		return -ENODEV;
+
+	min_pagesz = 1 << __ffs(domain->pgsize_bitmap);
+	if (!IS_ALIGNED(iova | size, min_pagesz)) {
+		pr_err("unaligned: iova 0x%lx size 0x%zx min_pagesz 0x%x\n",
+		       iova, size, min_pagesz);
+		return -EINVAL;
+	}
+
+	mutex_lock(&domain->switch_log_lock);
+
+	pr_debug("switch_dirty_log %s for: iova 0x%lx size 0x%zx\n",
+		 enable ? "enable" : "disable", iova, size);
+
+	while (size) {
+		size_t count, pgsize = iommu_pgsize(domain, iova, iova, size,
+						    &count);
+
+		flush = true;
+		ret = ops->switch_dirty_log(domain, enable, iova, pgsize, prot);
+		if (ret)
+			break;
+
+		pr_debug("switch_dirty_log handled: iova 0x%lx size 0x%zx\n",
+			 iova, pgsize);
+
+		iova += pgsize;
+		size -= pgsize;
+	}
+
+	if (flush)
+		iommu_flush_iotlb_all(domain);
+
+	if (!ret) {
+		domain->dirty_log_tracking = enable;
+		trace_switch_dirty_log(orig_iova, orig_size, enable);
+	}
+
+	mutex_unlock(&domain->switch_log_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iommu_switch_dirty_log);
+
+int iommu_sync_dirty_log(struct iommu_domain *domain, unsigned long iova,
+			 size_t size, unsigned long *bitmap,
+			 unsigned long base_iova, unsigned long bitmap_pgshift)
+{
+	const struct iommu_ops *ops = domain->ops;
+	unsigned long orig_iova = iova;
+	unsigned int min_pagesz;
+	size_t orig_size = size;
+	int ret = 0;
+
+	if (unlikely(!ops->sync_dirty_log))
+		return -ENODEV;
+
+	min_pagesz = 1 << __ffs(domain->pgsize_bitmap);
+	if (!IS_ALIGNED(iova | size, min_pagesz)) {
+		pr_err("unaligned: iova 0x%lx size 0x%zx min_pagesz 0x%x\n",
+		       iova, size, min_pagesz);
+		return -EINVAL;
+	}
+
+	mutex_lock(&domain->switch_log_lock);
+	if (!domain->dirty_log_tracking) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	pr_debug("sync_dirty_log for: iova 0x%lx size 0x%zx\n", iova, size);
+
+	while (size) {
+		size_t count, pgsize = iommu_pgsize(domain, iova, iova, size,
+						    &count);
+
+		ret = ops->sync_dirty_log(domain, iova, pgsize,
+					  bitmap, base_iova, bitmap_pgshift);
+		if (ret)
+			break;
+
+		pr_debug("sync_dirty_log handled: iova 0x%lx size 0x%zx\n",
+			 iova, pgsize);
+
+		iova += pgsize;
+		size -= pgsize;
+	}
+
+	if (!ret)
+		trace_sync_dirty_log(orig_iova, orig_size);
+out:
+	mutex_unlock(&domain->switch_log_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iommu_sync_dirty_log);
 
 void iommu_get_resv_regions(struct device *dev, struct list_head *list)
 {
