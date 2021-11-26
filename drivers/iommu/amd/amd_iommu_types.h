@@ -93,7 +93,9 @@
 #define FEATURE_HE		(1ULL<<8)
 #define FEATURE_PC		(1ULL<<9)
 #define FEATURE_GAM_VAPIC	(1ULL<<21)
+#define FEATURE_HASUP		(1ULL<<49)
 #define FEATURE_EPHSUP		(1ULL<<50)
+#define FEATURE_HDSUP		(1ULL<<52)
 #define FEATURE_SNP		(1ULL<<63)
 
 #define FEATURE_PASID_SHIFT	32
