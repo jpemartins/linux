@@ -1456,7 +1456,7 @@ static void free_gcr3_table(struct protection_domain *domain)
 }
 
 static void set_dte_entry(u16 devid, struct protection_domain *domain,
-			  bool ats, bool ppr)
+			  bool ats, bool ppr, bool had)
 {
 	u64 pte_root = 0;
 	u64 flags = 0;
@@ -1479,6 +1479,13 @@ static void set_dte_entry(u16 devid, struct protection_domain *domain,
 
 		if (iommu_feature(iommu, FEATURE_EPHSUP))
 			pte_root |= 1ULL << DEV_ENTRY_PPR;
+	}
+
+	if (had) {
+		struct amd_iommu *iommu = amd_iommu_rlookup_table[devid];
+
+		if (iommu_feature(iommu, FEATURE_HDSUP))
+			pte_root |= (3ULL << DEV_ENTRY_HAD);
 	}
 
 	if (domain->flags & PD_IOMMUV2_MASK) {
@@ -1554,7 +1561,7 @@ static void do_attach(struct iommu_dev_data *dev_data,
 
 	/* Update device table */
 	set_dte_entry(dev_data->devid, domain,
-		      ats, dev_data->iommu_v2);
+		      ats, dev_data->iommu_v2, dev_data->had);
 	clone_aliases(dev_data->pdev);
 
 	device_flush_dte(dev_data);
@@ -1673,6 +1680,8 @@ static int attach_device(struct device *dev,
 		dev_data->ats.enabled = true;
 		dev_data->ats.qdep    = pci_ats_queue_depth(pdev);
 	}
+
+	dev_data->had = amd_iommu_had_support;
 
 skip_ats_check:
 	ret = 0;
@@ -1811,7 +1820,8 @@ static void update_device_table(struct protection_domain *domain)
 
 	list_for_each_entry(dev_data, &domain->dev_list, list) {
 		set_dte_entry(dev_data->devid, domain,
-			      dev_data->ats.enabled, dev_data->iommu_v2);
+			      dev_data->ats.enabled,
+			      dev_data->iommu_v2, dev_data->had);
 		clone_aliases(dev_data->pdev);
 	}
 }
@@ -2163,6 +2173,53 @@ static bool amd_iommu_capable(enum iommu_cap cap)
 	return false;
 }
 
+static bool amd_iommu_support_dirty_log(struct iommu_domain *domain)
+{
+	struct protection_domain *pdomain = to_pdomain(domain);
+	struct iommu_dev_data *dev_data;
+	u64 dte;
+
+	if (!amd_iommu_had_support)
+		return false;
+
+	list_for_each_entry(dev_data, &pdomain->dev_list, list) {
+		dte = amd_iommu_dev_table[dev_data->devid].data[0];
+		if (!(dte & DTE_FLAG_HAD))
+			return false;
+	}
+
+	return true;
+}
+
+static int amd_iommu_switch_dirty_log(struct iommu_domain *domain, bool enable,
+				     unsigned long iova, size_t size, int prot)
+{
+	return !amd_iommu_support_dirty_log(domain);
+}
+
+static int amd_iommu_sync_dirty_log(struct iommu_domain *domain,
+				   unsigned long iova, size_t size,
+				   unsigned long *bitmap,
+				   unsigned long base_iova,
+				   unsigned long bitmap_pgshift)
+{
+	struct protection_domain *pdomain = to_pdomain(domain);
+	struct io_pgtable_ops *ops = &pdomain->iop.iop.ops;
+
+	if (!amd_iommu_support_dirty_log(domain))
+		return -ENOTSUPP;
+
+	if (!ops || !ops->sync_dirty_log) {
+		pr_err("io-pgtable don't realize sync dirty log\n");
+		return -ENODEV;
+	}
+
+	return ops->sync_dirty_log(ops, iova, size, bitmap, base_iova,
+				   bitmap_pgshift);
+}
+
+static void amd_iommu_flush_iotlb_all(struct iommu_domain *domain);
+
 static void amd_iommu_get_resv_regions(struct device *dev,
 				       struct list_head *head)
 {
@@ -2280,6 +2337,9 @@ const struct iommu_ops amd_iommu_ops = {
 	.release_device = amd_iommu_release_device,
 	.probe_finalize = amd_iommu_probe_finalize,
 	.device_group = amd_iommu_device_group,
+	.support_dirty_log = amd_iommu_support_dirty_log,
+	.switch_dirty_log = amd_iommu_switch_dirty_log,
+	.sync_dirty_log	= amd_iommu_sync_dirty_log,
 	.get_resv_regions = amd_iommu_get_resv_regions,
 	.put_resv_regions = generic_iommu_put_resv_regions,
 	.is_attach_deferred = amd_iommu_is_attach_deferred,

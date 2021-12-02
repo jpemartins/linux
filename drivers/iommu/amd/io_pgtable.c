@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/dma-mapping.h>
+#include <trace/events/amd_iommu.h>
 
 #include <asm/barrier.h>
 
@@ -478,6 +479,54 @@ static phys_addr_t iommu_v1_iova_to_phys(struct io_pgtable_ops *ops, unsigned lo
 	return (__pte & ~offset_mask) | (iova & offset_mask);
 }
 
+static int iommu_v1_sync_dirty_log(struct io_pgtable_ops *ops,
+				   unsigned long iova, size_t size,
+				   unsigned long *bitmap,
+				   unsigned long base_iova,
+				   unsigned long bitmap_pgshift)
+{
+	struct protection_domain *dom = io_pgtable_ops_to_domain(ops);
+	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(ops);
+	struct io_pgtable_cfg *cfg = &pgtable->iop.cfg;
+	unsigned long total_bits = 0, nbits, offset;
+	unsigned long end = iova + size - 1;
+
+	if (WARN_ON(!size || (size & cfg->pgsize_bitmap) != size))
+               return -EINVAL;
+
+	do {
+		unsigned long pgsize = 0;
+		u64 *pte;
+
+		pte = fetch_pte(pgtable, iova, &pgsize);
+		if (!pte || !IOMMU_PTE_PRESENT(*pte) || !IOMMU_PTE_DIRTY(*pte)) {
+			pgsize = pgsize ?: PTE_LEVEL_PAGE_SIZE(0); 
+			iova += pgsize;
+			continue;
+		}
+
+		/* It is writable, set the bitmap */
+		nbits = max(1UL, pgsize >> bitmap_pgshift);
+		offset = (iova - base_iova) >> bitmap_pgshift;
+		bitmap_set(bitmap, offset, nbits);
+		*pte &= ~IOMMU_PTE_HD;
+		iova += pgsize;
+		total_bits += nbits;
+	} while (iova < end);
+
+	if (total_bits) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&dom->lock, flags);
+		amd_iommu_domain_flush_tlb_pde(dom);
+		amd_iommu_domain_flush_complete(dom);
+		spin_unlock_irqrestore(&dom->lock, flags);
+		trace_iommu_v1_sync_dirty_log(iova, size, total_bits);
+	}
+
+	return 0;
+}
+
 /*
  * ----------------------------------------------------
  */
@@ -519,6 +568,7 @@ static struct io_pgtable *v1_alloc_pgtable(struct io_pgtable_cfg *cfg, void *coo
 	pgtable->iop.ops.map          = iommu_v1_map_page;
 	pgtable->iop.ops.unmap        = iommu_v1_unmap_page;
 	pgtable->iop.ops.iova_to_phys = iommu_v1_iova_to_phys;
+	pgtable->iop.ops.sync_dirty_log = iommu_v1_sync_dirty_log;
 
 	return &pgtable->iop;
 }

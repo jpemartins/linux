@@ -196,6 +196,7 @@
 /* macros and definitions for device table entries */
 #define DEV_ENTRY_VALID         0x00
 #define DEV_ENTRY_TRANSLATION   0x01
+#define DEV_ENTRY_HAD           0x07
 #define DEV_ENTRY_PPR           0x34
 #define DEV_ENTRY_IR            0x3d
 #define DEV_ENTRY_IW            0x3e
@@ -353,6 +354,7 @@
  * Bit value definition for I/O PTE fields
  */
 #define IOMMU_PTE_PR (1ULL << 0)
+#define IOMMU_PTE_HD (1ULL << 6)
 #define IOMMU_PTE_U  (1ULL << 59)
 #define IOMMU_PTE_FC (1ULL << 60)
 #define IOMMU_PTE_IR (1ULL << 61)
@@ -363,6 +365,7 @@
  */
 #define DTE_FLAG_V  (1ULL << 0)
 #define DTE_FLAG_TV (1ULL << 1)
+#define DTE_FLAG_HAD (3ULL << 7)
 #define DTE_FLAG_IR (1ULL << 61)
 #define DTE_FLAG_IW (1ULL << 62)
 
@@ -389,6 +392,7 @@
 
 #define IOMMU_PAGE_MASK (((1ULL << 52) - 1) & ~0xfffULL)
 #define IOMMU_PTE_PRESENT(pte) ((pte) & IOMMU_PTE_PR)
+#define IOMMU_PTE_DIRTY(pte) ((pte) & IOMMU_PTE_HD)
 #define IOMMU_PTE_PAGE(pte) (iommu_phys_to_virt((pte) & IOMMU_PAGE_MASK))
 #define IOMMU_PTE_MODE(pte) (((pte) >> 9) & 0x07)
 
@@ -687,6 +691,7 @@ struct iommu_dev_data {
 	struct pci_dev *pdev;
 	u16 devid;			  /* PCI Device ID */
 	bool iommu_v2;			  /* Device can make use of IOMMUv2 */
+	bool had;			  /* Enable IOMMU HDSup */
 	struct {
 		bool enabled;
 		int qdep;
