@@ -13,6 +13,7 @@
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/of.h>
+#include <linux/iova_bitmap.h>
 #include <uapi/linux/iommu.h>
 
 #define IOMMU_READ	(1 << 0)
@@ -65,6 +66,11 @@ struct iommu_domain_geometry {
 
 #define __IOMMU_DOMAIN_SVA	(1U << 4)  /* Shared process address space */
 
+/* Domain feature flags that do not define domain types */
+#define IOMMU_DOMAIN_F_ENFORCE_DIRTY	(1U << 6)  /* Enforce attachment
+						    * of dirty tracking
+						    * supported devices	  */
+
 /*
  * This are the possible domain-types
  *
@@ -93,6 +99,7 @@ struct iommu_domain_geometry {
 
 struct iommu_domain {
 	unsigned type;
+	unsigned int flags;
 	const struct iommu_domain_ops *ops;
 	unsigned long pgsize_bitmap;	/* Bitmap of page sizes in use */
 	struct iommu_domain_geometry geometry;
@@ -128,6 +135,7 @@ enum iommu_cap {
 	 * this device.
 	 */
 	IOMMU_CAP_ENFORCE_CACHE_COHERENCY,
+	IOMMU_CAP_DIRTY,		/* IOMMU supports dirty tracking */
 };
 
 /* These are the possible reserved region types */
@@ -221,6 +229,17 @@ struct iommu_iotlb_gather {
 };
 
 /**
+ * struct iommu_dirty_bitmap - Dirty IOVA bitmap state
+ *
+ * @bitmap: IOVA bitmap
+ * @gather: Range information for a pending IOTLB flush
+ */
+struct iommu_dirty_bitmap {
+	struct iova_bitmap *bitmap;
+	struct iommu_iotlb_gather *gather;
+};
+
+/**
  * struct iommu_ops - iommu ops and capabilities
  * @capable: check capability
  * @domain_alloc: allocate iommu domain
@@ -248,6 +267,7 @@ struct iommu_iotlb_gather {
  *                    pasid, so that any DMA transactions with this pasid
  *                    will be blocked by the hardware.
  * @pgsize_bitmap: bitmap of all possible supported page sizes
+ * @flags: All non domain type supported features
  * @owner: Driver module providing these ops
  */
 struct iommu_ops {
@@ -281,6 +301,7 @@ struct iommu_ops {
 
 	const struct iommu_domain_ops *default_domain_ops;
 	unsigned long pgsize_bitmap;
+	unsigned long supported_flags;
 	struct module *owner;
 };
 
@@ -316,6 +337,11 @@ struct iommu_ops {
  * @enable_nesting: Enable nesting
  * @set_pgtable_quirks: Set io page table quirks (IO_PGTABLE_QUIRK_*)
  * @free: Release the domain after use.
+ * @set_dirty_tracking: Enable or Disable dirty tracking on the iommu domain
+ * @read_and_clear_dirty: Walk IOMMU page tables for dirtied PTEs marshalled
+ *                        into a bitmap, with a bit represented as a page.
+ *                        Reads the dirty PTE bits and clears it from IO
+ *                        pagetables.
  */
 struct iommu_domain_ops {
 	int (*attach_dev)(struct iommu_domain *domain, struct device *dev);
@@ -348,6 +374,12 @@ struct iommu_domain_ops {
 				  unsigned long quirks);
 
 	void (*free)(struct iommu_domain *domain);
+
+	int (*set_dirty_tracking)(struct iommu_domain *domain, bool enabled);
+	int (*read_and_clear_dirty)(struct iommu_domain *domain,
+				    unsigned long iova, size_t size,
+				    unsigned long flags,
+				    struct iommu_dirty_bitmap *dirty);
 };
 
 /**
@@ -461,6 +493,9 @@ extern bool iommu_present(const struct bus_type *bus);
 extern bool device_iommu_capable(struct device *dev, enum iommu_cap cap);
 extern bool iommu_group_has_isolated_msi(struct iommu_group *group);
 extern struct iommu_domain *iommu_domain_alloc(const struct bus_type *bus);
+extern int iommu_domain_set_flags(struct iommu_domain *domain,
+				  const struct bus_type *bus,
+				  unsigned long flags);
 extern void iommu_domain_free(struct iommu_domain *domain);
 extern int iommu_attach_device(struct iommu_domain *domain,
 			       struct device *dev);
@@ -627,6 +662,28 @@ static inline bool iommu_iotlb_gather_queued(struct iommu_iotlb_gather *gather)
 	return gather && gather->queued;
 }
 
+static inline void iommu_dirty_bitmap_init(struct iommu_dirty_bitmap *dirty,
+					   struct iova_bitmap *bitmap,
+					   struct iommu_iotlb_gather *gather)
+{
+	if (gather)
+		iommu_iotlb_gather_init(gather);
+
+	dirty->bitmap = bitmap;
+	dirty->gather = gather;
+}
+
+static inline void
+iommu_dirty_bitmap_record(struct iommu_dirty_bitmap *dirty, unsigned long iova,
+			  unsigned long length)
+{
+	if (dirty->bitmap)
+		iova_bitmap_set(dirty->bitmap, iova, length);
+
+	if (dirty->gather)
+		iommu_iotlb_gather_add_range(dirty->gather, iova, length);
+}
+
 /* PCI device grouping function */
 extern struct iommu_group *pci_device_group(struct device *dev);
 /* Generic device grouping function */
@@ -656,6 +713,9 @@ struct iommu_fwspec {
 
 /* ATS is supported */
 #define IOMMU_FWSPEC_PCI_RC_ATS			(1 << 0)
+
+/* Read but do not clear any dirty bits */
+#define IOMMU_DIRTY_NO_CLEAR			(1 << 0)
 
 /**
  * struct iommu_sva - handle to a device-mm bond
@@ -753,6 +813,13 @@ static inline bool device_iommu_capable(struct device *dev, enum iommu_cap cap)
 static inline struct iommu_domain *iommu_domain_alloc(const struct bus_type *bus)
 {
 	return NULL;
+}
+
+static inline int iommu_domain_set_flags(struct iommu_domain *domain,
+					 const struct bus_type *bus,
+					 unsigned long flags)
+{
+	return -ENODEV;
 }
 
 static inline void iommu_domain_free(struct iommu_domain *domain)
