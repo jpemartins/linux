@@ -93,7 +93,9 @@
 #define FEATURE_HE		(1ULL<<8)
 #define FEATURE_PC		(1ULL<<9)
 #define FEATURE_GAM_VAPIC	(1ULL<<21)
+#define FEATURE_HASUP		(1ULL<<49)
 #define FEATURE_EPHSUP		(1ULL<<50)
+#define FEATURE_HDSUP		(1ULL<<52)
 #define FEATURE_SNP		(1ULL<<63)
 
 #define FEATURE_PASID_SHIFT	32
@@ -197,6 +199,7 @@
 /* macros and definitions for device table entries */
 #define DEV_ENTRY_VALID         0x00
 #define DEV_ENTRY_TRANSLATION   0x01
+#define DEV_ENTRY_HAD           0x07
 #define DEV_ENTRY_PPR           0x34
 #define DEV_ENTRY_IR            0x3d
 #define DEV_ENTRY_IW            0x3e
@@ -351,9 +354,15 @@
 	(1ULL << (12 + (9 * (level))))
 
 /*
+ * The IOPTE dirty bit
+ */
+#define IOMMU_PTE_HD_BIT (6)
+
+/*
  * Bit value definition for I/O PTE fields
  */
 #define IOMMU_PTE_PR (1ULL << 0)
+#define IOMMU_PTE_HD (1ULL << IOMMU_PTE_HD_BIT)
 #define IOMMU_PTE_U  (1ULL << 59)
 #define IOMMU_PTE_FC (1ULL << 60)
 #define IOMMU_PTE_IR (1ULL << 61)
@@ -364,6 +373,7 @@
  */
 #define DTE_FLAG_V  (1ULL << 0)
 #define DTE_FLAG_TV (1ULL << 1)
+#define DTE_FLAG_HAD (3ULL << 7)
 #define DTE_FLAG_IR (1ULL << 61)
 #define DTE_FLAG_IW (1ULL << 62)
 
@@ -390,6 +400,7 @@
 
 #define IOMMU_PAGE_MASK (((1ULL << 52) - 1) & ~0xfffULL)
 #define IOMMU_PTE_PRESENT(pte) ((pte) & IOMMU_PTE_PR)
+#define IOMMU_PTE_DIRTY(pte) ((pte) & IOMMU_PTE_HD)
 #define IOMMU_PTE_PAGE(pte) (iommu_phys_to_virt((pte) & IOMMU_PAGE_MASK))
 #define IOMMU_PTE_MODE(pte) (((pte) >> 9) & 0x07)
 

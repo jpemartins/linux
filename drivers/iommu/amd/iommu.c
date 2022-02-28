@@ -2169,6 +2169,81 @@ static bool amd_iommu_capable(enum iommu_cap cap)
 	return false;
 }
 
+static int amd_iommu_set_dirty_tracking(struct iommu_domain *domain,
+					bool enable)
+{
+	struct protection_domain *pdomain = to_pdomain(domain);
+	struct iommu_dev_data *dev_data;
+	bool dom_flush = false;
+
+	if (!amd_iommu_had_support)
+		return -EOPNOTSUPP;
+
+	list_for_each_entry(dev_data, &pdomain->dev_list, list) {
+		struct amd_iommu *iommu;
+		u64 pte_root;
+
+		iommu = amd_iommu_rlookup_table[dev_data->devid];
+		pte_root = amd_iommu_dev_table[dev_data->devid].data[0];
+
+		/* No change? */
+		if (!(enable ^ !!(pte_root & DTE_FLAG_HAD)))
+			continue;
+
+		pte_root = (enable ?
+			pte_root | DTE_FLAG_HAD : pte_root & ~DTE_FLAG_HAD);
+
+		/* Flush device DTE */
+		amd_iommu_dev_table[dev_data->devid].data[0] = pte_root;
+		device_flush_dte(dev_data);
+		dom_flush = true;
+	}
+
+	/* Flush IOTLB to mark IOPTE dirty on the next translation(s) */
+	if (dom_flush) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&pdomain->lock, flags);
+		amd_iommu_domain_flush_tlb_pde(pdomain);
+		amd_iommu_domain_flush_complete(pdomain);
+		spin_unlock_irqrestore(&pdomain->lock, flags);
+	}
+
+	return 0;
+}
+
+static bool amd_iommu_get_dirty_tracking(struct iommu_domain *domain)
+{
+	struct protection_domain *pdomain = to_pdomain(domain);
+	struct iommu_dev_data *dev_data;
+	u64 dte;
+
+	list_for_each_entry(dev_data, &pdomain->dev_list, list) {
+		dte = amd_iommu_dev_table[dev_data->devid].data[0];
+		if (!(dte & DTE_FLAG_HAD))
+			return false;
+	}
+
+	return true;
+}
+
+static int amd_iommu_read_and_clear_dirty(struct iommu_domain *domain,
+					  unsigned long iova, size_t size,
+					  struct iommu_dirty_bitmap *dirty)
+{
+	struct protection_domain *pdomain = to_pdomain(domain);
+	struct io_pgtable_ops *ops = &pdomain->iop.iop.ops;
+
+	if (!amd_iommu_get_dirty_tracking(domain))
+		return -EOPNOTSUPP;
+
+	if (!ops || !ops->read_and_clear_dirty)
+		return -ENODEV;
+
+	return ops->read_and_clear_dirty(ops, iova, size, dirty);
+}
+
+
 static void amd_iommu_get_resv_regions(struct device *dev,
 				       struct list_head *head)
 {
@@ -2293,6 +2368,8 @@ const struct iommu_ops amd_iommu_ops = {
 		.flush_iotlb_all = amd_iommu_flush_iotlb_all,
 		.iotlb_sync	= amd_iommu_iotlb_sync,
 		.free		= amd_iommu_domain_free,
+		.set_dirty_tracking = amd_iommu_set_dirty_tracking,
+		.read_and_clear_dirty = amd_iommu_read_and_clear_dirty,
 	}
 };
 
