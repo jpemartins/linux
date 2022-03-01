@@ -276,6 +276,77 @@ int iopt_map_user_pages(struct io_pagetable *iopt, unsigned long *iova,
 	return 0;
 }
 
+static int __set_dirty_tracking_range_locked(struct iommu_domain *domain,
+					     struct io_pagetable *iopt,
+					     bool enable)
+{
+	const struct iommu_domain_ops *ops = domain->ops;
+	struct iommu_iotlb_gather gather;
+	struct iopt_area *area;
+	int ret = -EOPNOTSUPP;
+	unsigned long iova;
+	size_t size;
+
+	iommu_iotlb_gather_init(&gather);
+
+	for (area = iopt_area_iter_first(iopt, 0, ULONG_MAX); area;
+	     area = iopt_area_iter_next(area, 0, ULONG_MAX)) {
+		iova = iopt_area_iova(area);
+		size = iopt_area_last_iova(area) - iova;
+
+		if (ops->set_dirty_tracking_range) {
+			ret = ops->set_dirty_tracking_range(domain, iova,
+							    size, &gather,
+							    enable);
+			if (ret < 0)
+				break;
+		}
+	}
+
+	iommu_iotlb_sync(domain, &gather);
+
+	return ret;
+}
+
+static int iommu_set_dirty_tracking(struct iommu_domain *domain,
+				    struct io_pagetable *iopt, bool enable)
+{
+	const struct iommu_domain_ops *ops = domain->ops;
+	int ret = -EOPNOTSUPP;
+
+	if (ops->set_dirty_tracking)
+		ret = ops->set_dirty_tracking(domain, enable);
+	else if (ops->set_dirty_tracking_range)
+		ret = __set_dirty_tracking_range_locked(domain, iopt,
+							enable);
+
+	return ret;
+}
+
+int iopt_set_dirty_tracking(struct io_pagetable *iopt,
+			    struct iommu_domain *domain, bool enable)
+{
+	struct iommu_domain *dom;
+	unsigned long index;
+	int ret = -EOPNOTSUPP;
+
+	down_write(&iopt->iova_rwsem);
+	if (!domain) {
+		down_write(&iopt->domains_rwsem);
+		xa_for_each(&iopt->domains, index, dom) {
+			ret = iommu_set_dirty_tracking(dom, iopt, enable);
+			if (ret < 0)
+				break;
+		}
+		up_write(&iopt->domains_rwsem);
+	} else {
+		ret = iommu_set_dirty_tracking(domain, iopt, enable);
+	}
+
+	up_write(&iopt->iova_rwsem);
+	return ret;
+}
+
 struct iopt_pages *iopt_get_pages(struct io_pagetable *iopt, unsigned long iova,
 				  unsigned long *start_byte,
 				  unsigned long length)
