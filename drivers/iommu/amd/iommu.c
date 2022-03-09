@@ -2144,6 +2144,27 @@ static size_t amd_iommu_unmap(struct iommu_domain *dom, unsigned long iova,
 	return r;
 }
 
+static size_t amd_iommu_unmap_read_dirty(struct iommu_domain *dom,
+					 unsigned long iova, size_t page_size,
+					 struct iommu_iotlb_gather *gather,
+					 struct iommu_dirty_bitmap *dirty)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
+	size_t r;
+
+	if ((amd_iommu_pgtable == AMD_IOMMU_V1) &&
+	    (domain->iop.mode == PAGE_MODE_NONE))
+		return 0;
+
+	r = (ops->unmap_read_dirty) ?
+		ops->unmap_read_dirty(ops, iova, page_size, gather, dirty) : 0;
+
+	amd_iommu_iotlb_gather_add_page(dom, gather, iova, page_size);
+
+	return r;
+}
+
 static phys_addr_t amd_iommu_iova_to_phys(struct iommu_domain *dom,
 					  dma_addr_t iova)
 {
@@ -2370,6 +2391,7 @@ const struct iommu_ops amd_iommu_ops = {
 		.free		= amd_iommu_domain_free,
 		.set_dirty_tracking = amd_iommu_set_dirty_tracking,
 		.read_and_clear_dirty = amd_iommu_read_and_clear_dirty,
+		.unmap_read_dirty = amd_iommu_unmap_read_dirty,
 	}
 };
 

@@ -355,6 +355,16 @@ static void free_clear_pte(u64 *pte, u64 pteval, struct list_head *freelist)
 	free_sub_pt(pt, mode, freelist);
 }
 
+static bool free_pte_dirty(u64 *pte, u64 pteval)
+{
+	bool dirty = false;
+
+	while (IOMMU_PTE_DIRTY(cmpxchg64(pte, pteval, 0)))
+		dirty = true;
+
+	return dirty;
+}
+
 /*
  * Generic mapping functions. It maps a physical address into a DMA
  * address space. It allocates the page table pages if necessary.
@@ -428,10 +438,11 @@ out:
 	return ret;
 }
 
-static unsigned long iommu_v1_unmap_page(struct io_pgtable_ops *ops,
-				      unsigned long iova,
-				      size_t size,
-				      struct iommu_iotlb_gather *gather)
+static unsigned long __iommu_v1_unmap_page(struct io_pgtable_ops *ops,
+					   unsigned long iova,
+					   size_t size,
+					   struct iommu_iotlb_gather *gather,
+					   struct iommu_dirty_bitmap *dirty)
 {
 	struct amd_io_pgtable *pgtable = io_pgtable_ops_to_data(ops);
 	unsigned long long unmapped;
@@ -445,11 +456,15 @@ static unsigned long iommu_v1_unmap_page(struct io_pgtable_ops *ops,
 	while (unmapped < size) {
 		pte = fetch_pte(pgtable, iova, &unmap_size);
 		if (pte) {
-			int i, count;
+			unsigned long i, count;
+			bool pte_dirty = false;
 
 			count = PAGE_SIZE_PTE_COUNT(unmap_size);
 			for (i = 0; i < count; i++)
-				pte[i] = 0ULL;
+				pte_dirty |= free_pte_dirty(&pte[i], pte[i]);
+
+			if (unlikely(pte_dirty && dirty))
+				iommu_dirty_bitmap_record(dirty, iova, unmap_size);
 		}
 
 		iova = (iova & ~(unmap_size - 1)) + unmap_size;
@@ -459,6 +474,22 @@ static unsigned long iommu_v1_unmap_page(struct io_pgtable_ops *ops,
 	BUG_ON(unmapped && !is_power_of_2(unmapped));
 
 	return unmapped;
+}
+
+static unsigned long iommu_v1_unmap_page(struct io_pgtable_ops *ops,
+					 unsigned long iova,
+					 size_t size,
+					 struct iommu_iotlb_gather *gather)
+{
+	return __iommu_v1_unmap_page(ops, iova, size, gather, NULL);
+}
+
+static unsigned long iommu_v1_unmap_page_read_dirty(struct io_pgtable_ops *ops,
+				unsigned long iova, size_t size,
+				struct iommu_iotlb_gather *gather,
+				struct iommu_dirty_bitmap *dirty)
+{
+	return __iommu_v1_unmap_page(ops, iova, size, gather, dirty);
 }
 
 static phys_addr_t iommu_v1_iova_to_phys(struct io_pgtable_ops *ops, unsigned long iova)
@@ -575,6 +606,7 @@ static struct io_pgtable *v1_alloc_pgtable(struct io_pgtable_cfg *cfg, void *coo
 	pgtable->iop.ops.unmap        = iommu_v1_unmap_page;
 	pgtable->iop.ops.iova_to_phys = iommu_v1_iova_to_phys;
 	pgtable->iop.ops.read_and_clear_dirty = iommu_v1_read_and_clear_dirty;
+	pgtable->iop.ops.unmap_read_dirty = iommu_v1_unmap_page_read_dirty;
 
 	return &pgtable->iop;
 }
