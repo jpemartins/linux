@@ -2289,12 +2289,25 @@ EXPORT_SYMBOL_GPL(iommu_map_atomic);
 
 static size_t __iommu_unmap_pages(struct iommu_domain *domain,
 				  unsigned long iova, size_t size,
-				  struct iommu_iotlb_gather *iotlb_gather)
+				  struct iommu_iotlb_gather *iotlb_gather,
+				  struct iommu_dirty_bitmap *dirty)
 {
 	const struct iommu_domain_ops *ops = domain->ops;
 	size_t pgsize, count;
 
 	pgsize = iommu_pgsize(domain, iova, iova, size, &count);
+
+	if (dirty) {
+		if (!ops->unmap_read_dirty && !ops->unmap_pages_read_dirty)
+			return 0;
+
+		return ops->unmap_pages_read_dirty ?
+		       ops->unmap_pages_read_dirty(domain, iova, pgsize,
+						   count, iotlb_gather, dirty) :
+		       ops->unmap_read_dirty(domain, iova, pgsize,
+					     iotlb_gather, dirty);
+	}
+
 	return ops->unmap_pages ?
 	       ops->unmap_pages(domain, iova, pgsize, count, iotlb_gather) :
 	       ops->unmap(domain, iova, pgsize, iotlb_gather);
@@ -2302,7 +2315,8 @@ static size_t __iommu_unmap_pages(struct iommu_domain *domain,
 
 static size_t __iommu_unmap(struct iommu_domain *domain,
 			    unsigned long iova, size_t size,
-			    struct iommu_iotlb_gather *iotlb_gather)
+			    struct iommu_iotlb_gather *iotlb_gather,
+			    struct iommu_dirty_bitmap *dirty)
 {
 	const struct iommu_domain_ops *ops = domain->ops;
 	size_t unmapped_page, unmapped = 0;
@@ -2337,9 +2351,8 @@ static size_t __iommu_unmap(struct iommu_domain *domain,
 	 * or we hit an area that isn't mapped.
 	 */
 	while (unmapped < size) {
-		unmapped_page = __iommu_unmap_pages(domain, iova,
-						    size - unmapped,
-						    iotlb_gather);
+		unmapped_page = __iommu_unmap_pages(domain, iova, size - unmapped,
+						    iotlb_gather, dirty);
 		if (!unmapped_page)
 			break;
 
@@ -2361,18 +2374,34 @@ size_t iommu_unmap(struct iommu_domain *domain,
 	size_t ret;
 
 	iommu_iotlb_gather_init(&iotlb_gather);
-	ret = __iommu_unmap(domain, iova, size, &iotlb_gather);
+	ret = __iommu_unmap(domain, iova, size, &iotlb_gather, NULL);
 	iommu_iotlb_sync(domain, &iotlb_gather);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(iommu_unmap);
 
+size_t iommu_unmap_read_dirty(struct iommu_domain *domain,
+			      unsigned long iova, size_t size,
+			      struct iommu_dirty_bitmap *dirty)
+{
+	struct iommu_iotlb_gather iotlb_gather;
+	size_t ret;
+
+	iommu_iotlb_gather_init(&iotlb_gather);
+	ret = __iommu_unmap(domain, iova, size, &iotlb_gather, dirty);
+	iommu_iotlb_sync(domain, &iotlb_gather);
+
+	return ret;
+
+}
+EXPORT_SYMBOL_GPL(iommu_unmap_read_dirty);
+
 size_t iommu_unmap_fast(struct iommu_domain *domain,
 			unsigned long iova, size_t size,
 			struct iommu_iotlb_gather *iotlb_gather)
 {
-	return __iommu_unmap(domain, iova, size, iotlb_gather);
+	return __iommu_unmap(domain, iova, size, iotlb_gather, NULL);
 }
 EXPORT_SYMBOL_GPL(iommu_unmap_fast);
 

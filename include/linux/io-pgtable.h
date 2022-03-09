@@ -171,6 +171,16 @@ struct io_pgtable_ops {
 	int (*read_and_clear_dirty)(struct io_pgtable_ops *ops,
 				    unsigned long iova, size_t size,
 				    struct iommu_dirty_bitmap *dirty);
+	size_t (*unmap_read_dirty)(struct io_pgtable_ops *ops,
+				   unsigned long iova,
+				   size_t size,
+				   struct iommu_iotlb_gather *gather,
+				   struct iommu_dirty_bitmap *dirty);
+	size_t (*unmap_pages_read_dirty)(struct io_pgtable_ops *ops,
+					 unsigned long iova,
+					 size_t pgsize, size_t pgcount,
+					 struct iommu_iotlb_gather *gather,
+					 struct iommu_dirty_bitmap *dirty);
 };
 
 /**
