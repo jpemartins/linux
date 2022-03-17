@@ -2769,6 +2769,34 @@ static int arm_smmu_read_and_clear_dirty(struct iommu_domain *domain,
 	return ret;
 }
 
+static int arm_smmu_set_dirty_tracking(struct iommu_domain *domain,
+				       unsigned long iova, size_t size,
+				       struct iommu_iotlb_gather *iotlb_gather,
+				       bool enabled)
+{
+	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
+	struct io_pgtable_ops *ops = smmu_domain->pgtbl_ops;
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
+	int ret;
+
+	if (!(smmu->features & ARM_SMMU_FEAT_HD) ||
+	    !(smmu->features & ARM_SMMU_FEAT_BBML2))
+		return -ENODEV;
+
+	if (smmu_domain->stage != ARM_SMMU_DOMAIN_S1)
+		return -EINVAL;
+
+	if (!ops || !ops->set_dirty_tracking) {
+		pr_err_once("io-pgtable don't support dirty tracking\n");
+		return -ENODEV;
+	}
+
+	ret = ops->set_dirty_tracking(ops, iova, size, enabled);
+	iommu_iotlb_gather_add_range(iotlb_gather, iova, size);
+
+	return ret;
+}
+
 static int arm_smmu_of_xlate(struct device *dev, struct of_phandle_args *args)
 {
 	return iommu_fwspec_add_ids(dev, args->args, 1);
@@ -2898,6 +2926,7 @@ static struct iommu_ops arm_smmu_ops = {
 		.enable_nesting		= arm_smmu_enable_nesting,
 		.free			= arm_smmu_domain_free,
 		.read_and_clear_dirty	= arm_smmu_read_and_clear_dirty,
+		.set_dirty_tracking_range = arm_smmu_set_dirty_tracking,
 	}
 };
 

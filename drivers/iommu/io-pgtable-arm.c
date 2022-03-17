@@ -76,6 +76,7 @@
 #define ARM_LPAE_PTE_NSTABLE		(((arm_lpae_iopte)1) << 63)
 #define ARM_LPAE_PTE_XN			(((arm_lpae_iopte)3) << 53)
 #define ARM_LPAE_PTE_DBM		(((arm_lpae_iopte)1) << 51)
+#define ARM_LPAE_PTE_DBM_BIT		51
 #define ARM_LPAE_PTE_AF			(((arm_lpae_iopte)1) << 10)
 #define ARM_LPAE_PTE_SH_NS		(((arm_lpae_iopte)0) << 8)
 #define ARM_LPAE_PTE_SH_OS		(((arm_lpae_iopte)2) << 8)
@@ -836,6 +837,56 @@ static int arm_lpae_read_and_clear_dirty(struct io_pgtable_ops *ops,
 				     __arm_lpae_read_and_clear_dirty, dirty);
 }
 
+static int __arm_lpae_set_dirty_modifier(unsigned long iova, size_t size,
+					 arm_lpae_iopte *ptep, void *opaque)
+{
+	bool enabled = *((bool *) opaque);
+	arm_lpae_iopte pte;
+
+	pte = READ_ONCE(*ptep);
+	if (WARN_ON(!pte))
+		return -EINVAL;
+
+	if ((pte & ARM_LPAE_PTE_AP_WRITABLE) == ARM_LPAE_PTE_AP_RDONLY)
+		return -EINVAL;
+
+	if (!(enabled ^ !(pte & ARM_LPAE_PTE_DBM)))
+		return 0;
+
+	pte = enabled ? pte | (ARM_LPAE_PTE_DBM | ARM_LPAE_PTE_AP_RDONLY) :
+		pte & ~(ARM_LPAE_PTE_DBM | ARM_LPAE_PTE_AP_RDONLY);
+
+	WRITE_ONCE(*ptep, pte);
+	return 0;
+}
+
+
+static int arm_lpae_set_dirty_tracking(struct io_pgtable_ops *ops,
+				       unsigned long iova, size_t size,
+				       bool enabled)
+{
+	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(ops);
+	struct io_pgtable_cfg *cfg = &data->iop.cfg;
+	arm_lpae_iopte *ptep = data->pgd;
+	int lvl = data->start_level;
+	long iaext = (s64)iova >> cfg->ias;
+
+	if (WARN_ON(!size || (size & cfg->pgsize_bitmap) != size))
+		return -EINVAL;
+
+	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_TTBR1)
+		iaext = ~iaext;
+	if (WARN_ON(iaext))
+		return -EINVAL;
+
+	if (data->iop.fmt != ARM_64_LPAE_S1 &&
+	    data->iop.fmt != ARM_32_LPAE_S1)
+		return -EINVAL;
+
+	return __arm_lpae_iopte_walk(data, iova, size, lvl, ptep,
+				     __arm_lpae_set_dirty_modifier, &enabled);
+}
+
 static void arm_lpae_restrict_pgsizes(struct io_pgtable_cfg *cfg)
 {
 	unsigned long granule, page_sizes;
@@ -917,6 +968,7 @@ arm_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg)
 		.unmap_pages	= arm_lpae_unmap_pages,
 		.iova_to_phys	= arm_lpae_iova_to_phys,
 		.read_and_clear_dirty = arm_lpae_read_and_clear_dirty,
+		.set_dirty_tracking   = arm_lpae_set_dirty_tracking,
 	};
 
 	return data;
