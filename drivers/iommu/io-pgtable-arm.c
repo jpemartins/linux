@@ -259,10 +259,30 @@ static void __arm_lpae_clear_pte(arm_lpae_iopte *ptep, struct io_pgtable_cfg *cf
 		__arm_lpae_sync_pte(ptep, 1, cfg);
 }
 
+static bool __arm_lpae_clear_dirty_pte(arm_lpae_iopte *ptep,
+				       struct io_pgtable_cfg *cfg)
+{
+	arm_lpae_iopte tmp;
+	bool dirty = false;
+
+	do {
+		tmp = cmpxchg64(ptep, *ptep, 0);
+		if ((tmp & ARM_LPAE_PTE_DBM) &&
+		    !(tmp & ARM_LPAE_PTE_AP_RDONLY))
+			dirty = true;
+	} while (tmp);
+
+	if (!cfg->coherent_walk)
+		__arm_lpae_sync_pte(ptep, 1, cfg);
+
+	return dirty;
+}
+
 static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			       struct iommu_iotlb_gather *gather,
 			       unsigned long iova, size_t size, size_t pgcount,
-			       int lvl, arm_lpae_iopte *ptep);
+			       int lvl, arm_lpae_iopte *ptep,
+			       struct iommu_dirty_bitmap *dirty);
 
 static void __arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 				phys_addr_t paddr, arm_lpae_iopte prot,
@@ -306,8 +326,13 @@ static int arm_lpae_init_pte(struct arm_lpae_io_pgtable *data,
 			size_t sz = ARM_LPAE_BLOCK_SIZE(lvl, data);
 
 			tblp = ptep - ARM_LPAE_LVL_IDX(iova, lvl, data);
+
+			/*
+			 * No need for dirty bitmap as arm_lpae_init_pte() is
+			 * only called from __arm_lpae_map()
+			 */
 			if (__arm_lpae_unmap(data, NULL, iova + i * sz, sz, 1,
-					     lvl, tblp) != sz) {
+					     lvl, tblp, NULL) != sz) {
 				WARN_ON(1);
 				return -EINVAL;
 			}
@@ -564,7 +589,8 @@ static size_t arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 				       struct iommu_iotlb_gather *gather,
 				       unsigned long iova, size_t size,
 				       arm_lpae_iopte blk_pte, int lvl,
-				       arm_lpae_iopte *ptep, size_t pgcount)
+				       arm_lpae_iopte *ptep, size_t pgcount,
+				       struct iommu_dirty_bitmap *dirty)
 {
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
 	arm_lpae_iopte pte, *tablep;
@@ -617,13 +643,15 @@ static size_t arm_lpae_split_blk_unmap(struct arm_lpae_io_pgtable *data,
 		return num_entries * size;
 	}
 
-	return __arm_lpae_unmap(data, gather, iova, size, pgcount, lvl, tablep);
+	return __arm_lpae_unmap(data, gather, iova, size, pgcount,
+				lvl, tablep, dirty);
 }
 
 static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			       struct iommu_iotlb_gather *gather,
 			       unsigned long iova, size_t size, size_t pgcount,
-			       int lvl, arm_lpae_iopte *ptep)
+			       int lvl, arm_lpae_iopte *ptep,
+			       struct iommu_dirty_bitmap *dirty)
 {
 	arm_lpae_iopte pte;
 	struct io_pgtable *iop = &data->iop;
@@ -649,7 +677,11 @@ static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 			if (WARN_ON(!pte))
 				break;
 
-			__arm_lpae_clear_pte(ptep, &iop->cfg);
+			if (likely(!dirty))
+				__arm_lpae_clear_pte(ptep, &iop->cfg);
+			else if (__arm_lpae_clear_dirty_pte(ptep, &iop->cfg))
+				iommu_dirty_bitmap_record(dirty, iova, size);
+
 
 			if (!iopte_leaf(pte, lvl, iop->fmt)) {
 				/* Also flush any partial walks */
@@ -671,17 +703,20 @@ static size_t __arm_lpae_unmap(struct arm_lpae_io_pgtable *data,
 		 * minus the part we want to unmap
 		 */
 		return arm_lpae_split_blk_unmap(data, gather, iova, size, pte,
-						lvl + 1, ptep, pgcount);
+						lvl + 1, ptep, pgcount, dirty);
 	}
 
 	/* Keep on walkin' */
 	ptep = iopte_deref(pte, data);
-	return __arm_lpae_unmap(data, gather, iova, size, pgcount, lvl + 1, ptep);
+	return __arm_lpae_unmap(data, gather, iova, size, pgcount,
+				lvl + 1, ptep, dirty);
 }
 
-static size_t arm_lpae_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
-				   size_t pgsize, size_t pgcount,
-				   struct iommu_iotlb_gather *gather)
+static size_t __arm_lpae_unmap_pages(struct io_pgtable_ops *ops,
+				     unsigned long iova,
+				     size_t pgsize, size_t pgcount,
+				     struct iommu_iotlb_gather *gather,
+				     struct iommu_dirty_bitmap *dirty)
 {
 	struct arm_lpae_io_pgtable *data = io_pgtable_ops_to_data(ops);
 	struct io_pgtable_cfg *cfg = &data->iop.cfg;
@@ -697,13 +732,29 @@ static size_t arm_lpae_unmap_pages(struct io_pgtable_ops *ops, unsigned long iov
 		return 0;
 
 	return __arm_lpae_unmap(data, gather, iova, pgsize, pgcount,
-				data->start_level, ptep);
+				data->start_level, ptep, dirty);
+}
+
+static size_t arm_lpae_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
+				   size_t pgsize, size_t pgcount,
+				   struct iommu_iotlb_gather *gather)
+{
+	return __arm_lpae_unmap_pages(ops, iova, pgsize, pgcount, gather, NULL);
 }
 
 static size_t arm_lpae_unmap(struct io_pgtable_ops *ops, unsigned long iova,
 			     size_t size, struct iommu_iotlb_gather *gather)
 {
-	return arm_lpae_unmap_pages(ops, iova, size, 1, gather);
+	return __arm_lpae_unmap_pages(ops, iova, size, 1, gather, NULL);
+}
+
+static size_t arm_lpae_unmap_pages_read_dirty(struct io_pgtable_ops *ops,
+					      unsigned long iova,
+					      size_t pgsize, size_t pgcount,
+					      struct iommu_iotlb_gather *gather,
+					      struct iommu_dirty_bitmap *dirty)
+{
+	return __arm_lpae_unmap_pages(ops, iova, pgsize, pgcount, gather, dirty);
 }
 
 static phys_addr_t arm_lpae_iova_to_phys(struct io_pgtable_ops *ops,
@@ -969,6 +1020,7 @@ arm_lpae_alloc_pgtable(struct io_pgtable_cfg *cfg)
 		.iova_to_phys	= arm_lpae_iova_to_phys,
 		.read_and_clear_dirty = arm_lpae_read_and_clear_dirty,
 		.set_dirty_tracking   = arm_lpae_set_dirty_tracking,
+		.unmap_pages_read_dirty     = arm_lpae_unmap_pages_read_dirty,
 	};
 
 	return data;

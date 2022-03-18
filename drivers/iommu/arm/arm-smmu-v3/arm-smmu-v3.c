@@ -2499,6 +2499,22 @@ static size_t arm_smmu_unmap_pages(struct iommu_domain *domain, unsigned long io
 	return ops->unmap_pages(ops, iova, pgsize, pgcount, gather);
 }
 
+static size_t arm_smmu_unmap_pages_read_dirty(struct iommu_domain *domain,
+					      unsigned long iova, size_t pgsize,
+					      size_t pgcount,
+					      struct iommu_iotlb_gather *gather,
+					      struct iommu_dirty_bitmap *dirty)
+{
+	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
+	struct io_pgtable_ops *ops = smmu_domain->pgtbl_ops;
+
+	if (!ops)
+		return 0;
+
+	return ops->unmap_pages_read_dirty(ops, iova, pgsize, pgcount,
+					   gather, dirty);
+}
+
 static void arm_smmu_flush_iotlb_all(struct iommu_domain *domain)
 {
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
@@ -2938,6 +2954,7 @@ static struct iommu_ops arm_smmu_ops = {
 		.free			= arm_smmu_domain_free,
 		.read_and_clear_dirty	= arm_smmu_read_and_clear_dirty,
 		.set_dirty_tracking_range = arm_smmu_set_dirty_tracking,
+		.unmap_pages_read_dirty	= arm_smmu_unmap_pages_read_dirty,
 	}
 };
 
