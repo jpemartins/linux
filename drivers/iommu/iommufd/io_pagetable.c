@@ -313,6 +313,20 @@ int iopt_map_user_pages(struct io_pagetable *iopt, unsigned long *iova,
 	return 0;
 }
 
+int iopt_get_dirty_tracking(struct io_pagetable *iopt,
+			    struct iommu_domain *domain)
+{
+	const struct iommu_domain_ops *ops = domain->ops;
+	int ret = -EOPNOTSUPP;
+
+	down_write(&iopt->iova_rwsem);
+	if (ops->get_dirty_tracking)
+		ret = ops->get_dirty_tracking(domain);
+	up_write(&iopt->iova_rwsem);
+
+	return ret;
+}
+
 int iopt_set_dirty_tracking(struct io_pagetable *iopt,
 			    struct iommu_domain *domain, bool enable)
 {
