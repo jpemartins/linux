@@ -243,8 +243,41 @@ int iommufd_ioas_unmap(struct iommufd_ucmd *ucmd)
 			rc = -EOVERFLOW;
 			goto out_put;
 		}
+
 		rc = iopt_unmap_iova(&ioas->iopt, cmd->iova, cmd->length, NULL);
 	}
+
+out_put:
+	iommufd_put_object(&ioas->obj);
+	return rc;
+}
+
+int iommufd_ioas_unmap_dirty(struct iommufd_ucmd *ucmd)
+{
+	struct iommu_ioas_unmap_dirty *cmd = ucmd->cmd;
+	struct iommufd_dirty_data *bitmap;
+	struct iommufd_ioas *ioas;
+	int rc;
+
+	ioas = iommufd_get_ioas(ucmd, cmd->ioas_id);
+	if (IS_ERR(ioas))
+		return PTR_ERR(ioas);
+
+	/* The bitmaps would be gigantic */
+	bitmap = &cmd->bitmap;
+	if (bitmap->iova == 0 && bitmap->length == U64_MAX)
+		return -EINVAL;
+
+	if (bitmap->iova >= ULONG_MAX || bitmap->length >= ULONG_MAX) {
+		rc = -EOVERFLOW;
+		goto out_put;
+	}
+
+	rc = iommufd_check_iova_range(ioas, bitmap);
+	if (rc)
+		goto out_put;
+
+	rc = iopt_unmap_iova(&ioas->iopt, bitmap->iova, bitmap->length, bitmap);
 
 out_put:
 	iommufd_put_object(&ioas->obj);

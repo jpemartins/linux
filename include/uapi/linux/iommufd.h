@@ -43,6 +43,9 @@ enum {
 	IOMMUFD_CMD_IOAS_COPY,
 	IOMMUFD_CMD_IOAS_UNMAP,
 	IOMMUFD_CMD_VFIO_IOAS,
+	IOMMUFD_CMD_HWPT_SET_DIRTY,
+	IOMMUFD_CMD_HWPT_GET_DIRTY_IOVA,
+	IOMMUFD_CMD_IOAS_UNMAP_DIRTY,
 };
 
 /**
@@ -220,4 +223,79 @@ struct iommu_vfio_ioas {
 	__u16 __reserved;
 };
 #define IOMMU_VFIO_IOAS _IO(IOMMUFD_TYPE, IOMMUFD_CMD_VFIO_IOAS)
+
+/**
+ * enum iommufd_set_dirty_flags - Flags for steering dirty tracking
+ * @IOMMU_DIRTY_TRACKING_DISABLED: Disables dirty tracking
+ * @IOMMU_DIRTY_TRACKING_ENABLED: Enables dirty tracking
+ */
+enum iommufd_set_dirty_flags {
+	IOMMU_DIRTY_TRACKING_DISABLED = 0,
+	IOMMU_DIRTY_TRACKING_ENABLED = 1 << 0,
+};
+
+/**
+ * struct iommu_hwpt_set_dirty - ioctl(IOMMU_HWPT_SET_DIRTY)
+ * @size: sizeof(struct iommu_hwpt_set_dirty)
+ * @flags: Flags to control dirty tracking status.
+ * @hwpt_id: HW pagetable ID that represents the IOMMU domain.
+ *
+ * Toggle dirty tracking on an HW pagetable.
+ */
+struct iommu_hwpt_set_dirty {
+	__u32 size;
+	__u32 flags;
+	__u32 hwpt_id;
+	__u32 __reserved;
+};
+#define IOMMU_HWPT_SET_DIRTY _IO(IOMMUFD_TYPE, IOMMUFD_CMD_HWPT_SET_DIRTY)
+
+/**
+ * struct iommufd_dirty_bitmap - Dirty IOVA tracking bitmap
+ * @iova: base IOVA of the bitmap
+ * @length: IOVA size
+ * @page_size: page size granularity of each bit in the bitmap
+ * @data: bitmap where to set the dirty bits. The bitmap bits each
+ * represent a page_size which you deviate from an arbitrary iova.
+ * Checking a given IOVA is dirty:
+ *
+ *  data[(iova / page_size) / 64] & (1ULL << (iova % 64))
+ */
+struct iommufd_dirty_data {
+	__aligned_u64 iova;
+	__aligned_u64 length;
+	__aligned_u64 page_size;
+	__aligned_u64 *data;
+};
+
+/**
+ * struct iommu_hwpt_get_dirty_iova - ioctl(IOMMU_HWPT_GET_DIRTY_IOVA)
+ * @size: sizeof(struct iommu_hwpt_get_dirty_iova)
+ * @bitmap: Bitmap of the range of IOVA to read out
+ */
+struct iommu_hwpt_get_dirty_iova {
+	__u32 size;
+	__u32 hwpt_id;
+	struct iommufd_dirty_data bitmap;
+};
+#define IOMMU_HWPT_GET_DIRTY_IOVA _IO(IOMMUFD_TYPE, IOMMUFD_CMD_HWPT_GET_DIRTY_IOVA)
+
+/**
+ * struct iommu_hwpt_unmap - ioctl(IOMMU_HWPT_UNMAP_DIRTY)
+ * @size: sizeof(struct iommu_hwpt_unmap_dirty)
+ * @ioas_id: IOAS ID to unmap the mapping of
+ * @data: Dirty data of the range of IOVA to unmap
+ *
+ * Unmap an IOVA range and return a bitmap of the dirty bits.
+ * The iova/length must exactly match a range
+ * used with IOMMU_IOAS_PAGETABLE_MAP, or be the values 0 & U64_MAX.
+ * In the latter case all IOVAs will be unmaped.
+ */
+struct iommu_ioas_unmap_dirty {
+	__u32 size;
+	__u32 ioas_id;
+	struct iommufd_dirty_data bitmap;
+};
+#define IOMMU_IOAS_UNMAP_DIRTY _IO(IOMMUFD_TYPE, IOMMUFD_CMD_IOAS_UNMAP_DIRTY)
+
 #endif

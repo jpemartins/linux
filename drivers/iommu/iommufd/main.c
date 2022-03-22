@@ -192,7 +192,10 @@ union ucmd_buffer {
 	struct iommu_ioas_iova_ranges iova_ranges;
 	struct iommu_ioas_map map;
 	struct iommu_ioas_unmap unmap;
+	struct iommu_ioas_unmap_dirty unmap_dirty;
 	struct iommu_destroy destroy;
+	struct iommu_hwpt_set_dirty set_dirty;
+	struct iommu_hwpt_get_dirty_iova get_dirty_iova;
 #ifdef CONFIG_IOMMUFD_TEST
 	struct iommu_test_cmd test;
 #endif
@@ -226,8 +229,14 @@ static struct iommufd_ioctl_op iommufd_ioctl_ops[] = {
 		 __reserved),
 	IOCTL_OP(IOMMU_IOAS_UNMAP, iommufd_ioas_unmap, struct iommu_ioas_unmap,
 		 length),
+	IOCTL_OP(IOMMU_IOAS_UNMAP_DIRTY, iommufd_ioas_unmap_dirty,
+		 struct iommu_ioas_unmap_dirty, bitmap.data),
 	IOCTL_OP(IOMMU_VFIO_IOAS, iommufd_vfio_ioas, struct iommu_vfio_ioas,
 		 __reserved),
+	IOCTL_OP(IOMMU_HWPT_SET_DIRTY, iommufd_hwpt_set_dirty,
+		 struct iommu_hwpt_set_dirty, __reserved),
+	IOCTL_OP(IOMMU_HWPT_GET_DIRTY_IOVA, iommufd_hwpt_get_dirty_iova,
+		 struct iommu_hwpt_get_dirty_iova, bitmap.data),
 #ifdef CONFIG_IOMMUFD_TEST
 	IOCTL_OP(IOMMU_TEST_CMD, iommufd_test, struct iommu_test_cmd, last),
 #endif

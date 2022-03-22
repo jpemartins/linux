@@ -3,6 +3,7 @@
  * Copyright (c) 2021-2022, NVIDIA CORPORATION & AFFILIATES
  */
 #include <linux/iommu.h>
+#include <uapi/linux/iommufd.h>
 
 #include "iommufd_private.h"
 
@@ -139,4 +140,82 @@ void iommufd_hw_pagetable_put(struct iommufd_ctx *ictx,
 		return;
 	}
 	iommufd_object_destroy_user(ictx, &hwpt->obj);
+}
+
+int iommufd_hwpt_set_dirty(struct iommufd_ucmd *ucmd)
+{
+	struct iommu_hwpt_set_dirty *cmd = ucmd->cmd;
+	struct iommufd_hw_pagetable *hwpt;
+	struct iommufd_ioas *ioas;
+	int rc = -EOPNOTSUPP;
+	bool enable;
+
+	hwpt = iommufd_get_hwpt(ucmd, cmd->hwpt_id);
+	if (IS_ERR(hwpt))
+		return PTR_ERR(hwpt);
+
+	ioas = hwpt->ioas;
+	enable = cmd->flags & IOMMU_DIRTY_TRACKING_ENABLED;
+
+	rc = iopt_set_dirty_tracking(&ioas->iopt, hwpt->domain, enable);
+
+	iommufd_put_object(&hwpt->obj);
+	return rc;
+}
+
+int iommufd_check_iova_range(struct iommufd_ioas *ioas,
+			     struct iommufd_dirty_data *bitmap)
+{
+	unsigned long pgshift, npages;
+	size_t iommu_pgsize;
+	int rc = -EINVAL;
+	u64 bitmap_size;
+
+	pgshift = __ffs(bitmap->page_size);
+	npages = bitmap->length >> pgshift;
+	bitmap_size = dirty_bitmap_bytes(npages);
+
+	if (!npages || (bitmap_size > DIRTY_BITMAP_SIZE_MAX))
+		return rc;
+
+	if (!access_ok((void __user *) bitmap->data, bitmap_size))
+		return rc;
+
+	iommu_pgsize = 1 << __ffs(ioas->iopt.iova_alignment);
+
+	/* allow only smallest supported pgsize */
+	if (bitmap->page_size != iommu_pgsize)
+		return rc;
+
+	if (bitmap->iova & (iommu_pgsize - 1))
+		return rc;
+
+	if (!bitmap->length || bitmap->length & (iommu_pgsize - 1))
+		return rc;
+
+	return 0;
+}
+
+int iommufd_hwpt_get_dirty_iova(struct iommufd_ucmd *ucmd)
+{
+	struct iommu_hwpt_get_dirty_iova *cmd = ucmd->cmd;
+	struct iommufd_hw_pagetable *hwpt;
+	struct iommufd_ioas *ioas;
+	int rc = -EOPNOTSUPP;
+
+	hwpt = iommufd_get_hwpt(ucmd, cmd->hwpt_id);
+	if (IS_ERR(hwpt))
+		return PTR_ERR(hwpt);
+
+	ioas = hwpt->ioas;
+	rc = iommufd_check_iova_range(ioas, &cmd->bitmap);
+	if (rc)
+		goto out_put;
+
+	rc = iopt_read_and_clear_dirty_data(&ioas->iopt, hwpt->domain,
+					    &cmd->bitmap);
+
+out_put:
+	iommufd_put_object(&hwpt->obj);
+	return rc;
 }

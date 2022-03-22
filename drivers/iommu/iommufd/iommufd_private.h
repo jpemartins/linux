@@ -10,6 +10,7 @@
 #include <linux/uaccess.h>
 #include <linux/iommu.h>
 #include <linux/uio.h>
+#include <uapi/linux/iommufd.h>
 
 struct iommu_domain;
 struct iommu_group;
@@ -48,13 +49,6 @@ int iopt_map_pages(struct io_pagetable *iopt, struct iopt_pages *pages,
 		   unsigned long *dst_iova, unsigned long start_byte,
 		   unsigned long length, int iommu_prot, unsigned int flags);
 int iopt_unmap_all(struct io_pagetable *iopt);
-
-struct iommufd_dirty_data {
-	unsigned long iova;
-	unsigned long length;
-	unsigned long page_size;
-	unsigned long *data;
-};
 
 int iopt_set_dirty_tracking(struct io_pagetable *iopt,
 			    struct iommu_domain *domain, bool enable);
@@ -244,7 +238,10 @@ int iommufd_ioas_iova_ranges(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_map(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_copy(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_unmap(struct iommufd_ucmd *ucmd);
+int iommufd_ioas_unmap_dirty(struct iommufd_ucmd *ucmd);
 int iommufd_vfio_ioas(struct iommufd_ucmd *ucmd);
+int iommufd_check_iova_range(struct iommufd_ioas *ioas,
+			     struct iommufd_dirty_data *bitmap);
 
 /*
  * A HW pagetable is called an iommu_domain inside the kernel. This user object
@@ -262,6 +259,17 @@ struct iommufd_hw_pagetable {
 	struct mutex devices_lock;
 	struct list_head devices;
 };
+
+static inline struct iommufd_hw_pagetable *iommufd_get_hwpt(
+					struct iommufd_ucmd *ucmd, u32 id)
+{
+	return container_of(iommufd_get_object(ucmd->ictx, id,
+					       IOMMUFD_OBJ_HW_PAGETABLE),
+			    struct iommufd_hw_pagetable, obj);
+}
+int iommufd_hwpt_set_dirty(struct iommufd_ucmd *ucmd);
+int iommufd_hwpt_get_dirty_iova(struct iommufd_ucmd *ucmd);
+int iommufd_hwpt_unmap_dirty(struct iommufd_ucmd *ucmd);
 
 struct iommufd_hw_pagetable *
 iommufd_hw_pagetable_from_id(struct iommufd_ctx *ictx, u32 pt_id,
