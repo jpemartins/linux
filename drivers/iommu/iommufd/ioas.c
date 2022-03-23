@@ -243,7 +243,7 @@ int iommufd_ioas_unmap(struct iommufd_ucmd *ucmd)
 			rc = -EOVERFLOW;
 			goto out_put;
 		}
-		rc = iopt_unmap_iova(&ioas->iopt, cmd->iova, cmd->length);
+		rc = iopt_unmap_iova(&ioas->iopt, cmd->iova, cmd->length, NULL);
 	}
 
 out_put:

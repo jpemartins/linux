@@ -542,13 +542,14 @@ struct iopt_pages *iopt_get_pages(struct io_pagetable *iopt, unsigned long iova,
 }
 
 static int __iopt_unmap_iova(struct io_pagetable *iopt, struct iopt_area *area,
-			     struct iopt_pages *pages)
+			     struct iopt_pages *pages,
+			     struct iommufd_dirty_data *bitmap)
 {
 	/* Drivers have to unpin on notification. */
 	if (WARN_ON(atomic_read(&area->num_users)))
 		return -EBUSY;
 
-	iopt_area_unfill_domains(area, pages);
+	iopt_area_unfill_domains(area, pages, bitmap);
 	WARN_ON(atomic_read(&area->num_users));
 	iopt_abort_area(area);
 	iopt_put_pages(pages);
@@ -560,12 +561,13 @@ static int __iopt_unmap_iova(struct io_pagetable *iopt, struct iopt_area *area,
  * @iopt: io_pagetable to act on
  * @iova: Starting iova to unmap
  * @length: Number of bytes to unmap
+ * @bitmap: Bitmap of dirtied IOVAs
  *
  * The requested range must exactly match an existing range.
  * Splitting/truncating IOVA mappings is not allowed.
  */
 int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
-		    unsigned long length)
+		    unsigned long length, struct iommufd_dirty_data *bitmap)
 {
 	struct iopt_pages *pages;
 	struct iopt_area *area;
@@ -590,7 +592,8 @@ int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
 	area->pages = NULL;
 	up_write(&iopt->iova_rwsem);
 
-	rc = __iopt_unmap_iova(iopt, area, pages);
+	rc = __iopt_unmap_iova(iopt, area, pages, bitmap);
+
 	up_read(&iopt->domains_rwsem);
 	return rc;
 }
@@ -614,7 +617,7 @@ int iopt_unmap_all(struct io_pagetable *iopt)
 		area->pages = NULL;
 		up_write(&iopt->iova_rwsem);
 
-		rc = __iopt_unmap_iova(iopt, area, pages);
+		rc = __iopt_unmap_iova(iopt, area, pages, NULL);
 		if (rc)
 			goto out_unlock_domains;
 

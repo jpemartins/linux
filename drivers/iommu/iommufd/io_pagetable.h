@@ -48,7 +48,8 @@ struct iopt_area {
 };
 
 int iopt_area_fill_domains(struct iopt_area *area, struct iopt_pages *pages);
-void iopt_area_unfill_domains(struct iopt_area *area, struct iopt_pages *pages);
+void iopt_area_unfill_domains(struct iopt_area *area, struct iopt_pages *pages,
+			      struct iommufd_dirty_data *bitmap);
 
 int iopt_area_fill_domain(struct iopt_area *area, struct iommu_domain *domain);
 void iopt_area_unfill_domain(struct iopt_area *area, struct iopt_pages *pages,

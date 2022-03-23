@@ -148,7 +148,7 @@ static int iommufd_vfio_unmap_dma(struct iommufd_ctx *ictx, unsigned int cmd,
 	if (unmap.flags & VFIO_DMA_UNMAP_FLAG_ALL)
 		rc = iopt_unmap_all(&ioas->iopt);
 	else
-		rc = iopt_unmap_iova(&ioas->iopt, unmap.iova, unmap.size);
+		rc = iopt_unmap_iova(&ioas->iopt, unmap.iova, unmap.size, NULL);
 	iommufd_put_object(&ioas->obj);
 	return rc;
 }

@@ -144,16 +144,64 @@ static void iommu_unmap_nofail(struct iommu_domain *domain, unsigned long iova,
 	WARN_ON(ret != size);
 }
 
+static void iommu_unmap_read_dirty_nofail(struct iommu_domain *domain,
+					  unsigned long iova, size_t size,
+					  struct iommufd_dirty_data *bitmap,
+					  struct iommufd_dirty_iter *iter)
+{
+	size_t ret = 0;
+
+	ret = iommufd_dirty_iter_init(iter, bitmap);
+	WARN_ON(ret);
+
+	for (; iommufd_dirty_iter_done(iter);
+	     iommufd_dirty_iter_advance(iter)) {
+		ret = iommufd_dirty_iter_get(iter);
+		if (ret < 0)
+			break;
+
+		ret = iommu_unmap_read_dirty(domain,
+			iommufd_dirty_iova(iter),
+			iommufd_dirty_iova_length(iter), &iter->dirty);
+
+		iommufd_dirty_iter_put(iter);
+
+		/*
+		 * It is a logic error in this code or a driver bug
+		 * if the IOMMU unmaps something other than exactly
+		 * as requested.
+		 */
+		if (ret != size) {
+			WARN_ONCE(1, "unmapped %ld instead of %ld", ret, size);
+			break;
+		}
+	}
+
+	iommufd_dirty_iter_free(iter);
+}
+
 static void iopt_area_unmap_domain_range(struct iopt_area *area,
 					 struct iommu_domain *domain,
 					 unsigned long start_index,
-					 unsigned long last_index)
+					 unsigned long last_index,
+					 struct iommufd_dirty_data *bitmap)
 {
 	unsigned long start_iova = iopt_area_index_to_iova(area, start_index);
 
-	iommu_unmap_nofail(domain, start_iova,
-			   iopt_area_index_to_iova_last(area, last_index) -
-				   start_iova + 1);
+	if (bitmap) {
+		struct iommufd_dirty_iter iter;
+
+		iommu_dirty_bitmap_init(&iter.dirty, bitmap->iova,
+					__ffs(bitmap->page_size), NULL);
+
+		iommu_unmap_read_dirty_nofail(domain, start_iova,
+			iopt_area_index_to_iova_last(area, last_index) -
+					   start_iova + 1, bitmap, &iter);
+	} else {
+		iommu_unmap_nofail(domain, start_iova,
+				   iopt_area_index_to_iova_last(area, last_index) -
+					   start_iova + 1);
+	}
 }
 
 static struct iopt_area *iopt_pages_find_domain_area(struct iopt_pages *pages,
@@ -808,7 +856,8 @@ static bool interval_tree_fully_covers_area(struct rb_root_cached *root,
 static void __iopt_area_unfill_domain(struct iopt_area *area,
 				      struct iopt_pages *pages,
 				      struct iommu_domain *domain,
-				      unsigned long last_index)
+				      unsigned long last_index,
+				      struct iommufd_dirty_data *bitmap)
 {
 	unsigned long unmapped_index = iopt_area_index(area);
 	unsigned long cur_index = unmapped_index;
@@ -821,7 +870,8 @@ static void __iopt_area_unfill_domain(struct iopt_area *area,
 	if (interval_tree_fully_covers_area(&pages->domains_itree, area) ||
 	    interval_tree_fully_covers_area(&pages->users_itree, area)) {
 		iopt_area_unmap_domain_range(area, domain,
-					     iopt_area_index(area), last_index);
+					     iopt_area_index(area),
+					     last_index, bitmap);
 		return;
 	}
 
@@ -837,7 +887,7 @@ static void __iopt_area_unfill_domain(struct iopt_area *area,
 		batch_from_domain(&batch, domain, area, cur_index, last_index);
 		cur_index += batch.total_pfns;
 		iopt_area_unmap_domain_range(area, domain, unmapped_index,
-					     cur_index - 1);
+					     cur_index - 1, bitmap);
 		unmapped_index = cur_index;
 		iopt_pages_unpin(pages, &batch, batch_index, cur_index - 1);
 		batch_clear(&batch);
@@ -852,7 +902,8 @@ static void iopt_area_unfill_partial_domain(struct iopt_area *area,
 					    unsigned long end_index)
 {
 	if (end_index != iopt_area_index(area))
-		__iopt_area_unfill_domain(area, pages, domain, end_index - 1);
+		__iopt_area_unfill_domain(area, pages, domain,
+					  end_index - 1, NULL);
 }
 
 /**
@@ -891,7 +942,7 @@ void iopt_area_unfill_domain(struct iopt_area *area, struct iopt_pages *pages,
 			     struct iommu_domain *domain)
 {
 	__iopt_area_unfill_domain(area, pages, domain,
-				  iopt_area_last_index(area));
+				  iopt_area_last_index(area), NULL);
 }
 
 /**
@@ -1004,7 +1055,7 @@ out_unmap:
 			if (end_index != iopt_area_index(area))
 				iopt_area_unmap_domain_range(
 					area, domain, iopt_area_index(area),
-					end_index - 1);
+					end_index - 1, NULL);
 		} else {
 			iopt_area_unfill_partial_domain(area, pages, domain,
 							end_index);
@@ -1025,7 +1076,8 @@ out_unlock:
  * Called during area destruction. This unmaps the iova's covered by all the
  * area's domains and releases the PFNs.
  */
-void iopt_area_unfill_domains(struct iopt_area *area, struct iopt_pages *pages)
+void iopt_area_unfill_domains(struct iopt_area *area, struct iopt_pages *pages,
+			      struct iommufd_dirty_data *bitmap)
 {
 	struct io_pagetable *iopt = area->iopt;
 	struct iommu_domain *domain;
@@ -1041,10 +1093,11 @@ void iopt_area_unfill_domains(struct iopt_area *area, struct iopt_pages *pages)
 		if (domain != area->storage_domain)
 			iopt_area_unmap_domain_range(
 				area, domain, iopt_area_index(area),
-				iopt_area_last_index(area));
+				iopt_area_last_index(area), bitmap);
 
 	interval_tree_remove(&area->pages_node, &pages->domains_itree);
-	iopt_area_unfill_domain(area, pages, area->storage_domain);
+	__iopt_area_unfill_domain(area, pages, area->storage_domain,
+				  iopt_area_last_index(area), bitmap);
 	area->storage_domain = NULL;
 out_unlock:
 	mutex_unlock(&pages->mutex);
