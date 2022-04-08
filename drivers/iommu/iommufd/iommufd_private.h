@@ -8,6 +8,8 @@
 #include <linux/xarray.h>
 #include <linux/refcount.h>
 #include <linux/uaccess.h>
+#include <linux/iommu.h>
+#include <linux/uio.h>
 
 struct iommu_domain;
 struct iommu_group;
@@ -49,8 +51,50 @@ int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
 		    unsigned long length);
 int iopt_unmap_all(struct io_pagetable *iopt);
 
+struct iommufd_dirty_data {
+	unsigned long iova;
+	unsigned long length;
+	unsigned long page_size;
+	unsigned long *data;
+};
+
 int iopt_set_dirty_tracking(struct io_pagetable *iopt,
 			    struct iommu_domain *domain, bool enable);
+int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
+				   struct iommu_domain *domain,
+				   struct iommufd_dirty_data *bitmap);
+
+struct iommufd_dirty_iter {
+	struct iommu_dirty_bitmap dirty;
+	struct iovec bitmap_iov;
+	struct iov_iter bitmap_iter;
+	unsigned long iova;
+};
+
+void iommufd_dirty_iter_put(struct iommufd_dirty_iter *iter);
+int iommufd_dirty_iter_get(struct iommufd_dirty_iter *iter);
+int iommufd_dirty_iter_init(struct iommufd_dirty_iter *iter,
+			    struct iommufd_dirty_data *bitmap);
+void iommufd_dirty_iter_free(struct iommufd_dirty_iter *iter);
+bool iommufd_dirty_iter_done(struct iommufd_dirty_iter *iter);
+void iommufd_dirty_iter_advance(struct iommufd_dirty_iter *iter);
+unsigned long iommufd_dirty_iova_length(struct iommufd_dirty_iter *iter);
+unsigned long iommufd_dirty_iova(struct iommufd_dirty_iter *iter);
+static inline unsigned long dirty_bitmap_bytes(unsigned long nr_pages)
+{
+	return (ALIGN(nr_pages, BITS_PER_TYPE(u64)) / BITS_PER_BYTE);
+}
+
+/*
+ * Input argument of number of bits to bitmap_set() is unsigned integer, which
+ * further casts to signed integer for unaligned multi-bit operation,
+ * __bitmap_set().
+ * Then maximum bitmap size supported is 2^31 bits divided by 2^3 bits/byte,
+ * that is 2^28 (256 MB) which maps to 2^31 * 2^12 = 2^43 (8TB) on 4K page
+ * system.
+ */
+#define DIRTY_BITMAP_PAGES_MAX  ((u64)INT_MAX)
+#define DIRTY_BITMAP_SIZE_MAX   dirty_bitmap_bytes(DIRTY_BITMAP_PAGES_MAX)
 
 int iopt_access_pages(struct io_pagetable *iopt, unsigned long iova,
 		      unsigned long npages, struct page **out_pages, bool write);

@@ -14,6 +14,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
+#include <uapi/linux/iommufd.h>
 
 #include "io_pagetable.h"
 
@@ -344,6 +345,174 @@ int iopt_set_dirty_tracking(struct io_pagetable *iopt,
 	}
 
 	up_write(&iopt->iova_rwsem);
+	return ret;
+}
+
+int iommufd_dirty_iter_init(struct iommufd_dirty_iter *iter,
+			    struct iommufd_dirty_data *bitmap)
+{
+	struct iommu_dirty_bitmap *dirty = &iter->dirty;
+	unsigned long bitmap_len;
+
+	bitmap_len = dirty_bitmap_bytes(bitmap->length >> dirty->pgshift);
+
+	import_single_range(WRITE, bitmap->data, bitmap_len,
+			    &iter->bitmap_iov, &iter->bitmap_iter);
+	iter->iova = bitmap->iova;
+
+	/* Can record up to 64G at a time */
+	dirty->pages = (struct page **) __get_free_page(GFP_KERNEL);
+
+	return !dirty->pages ? -ENOMEM : 0;
+}
+
+void iommufd_dirty_iter_free(struct iommufd_dirty_iter *iter)
+{
+	struct iommu_dirty_bitmap *dirty = &iter->dirty;
+
+	if (dirty->pages) {
+		free_page((unsigned long) dirty->pages);
+		dirty->pages = NULL;
+	}
+}
+
+bool iommufd_dirty_iter_done(struct iommufd_dirty_iter *iter)
+{
+	return iov_iter_count(&iter->bitmap_iter) > 0;
+}
+
+static inline unsigned long iommufd_dirty_iter_bytes(struct iommufd_dirty_iter *iter)
+{
+	unsigned long left = iter->bitmap_iter.count - iter->bitmap_iter.iov_offset;
+
+	left = min_t(unsigned long, left, (iter->dirty.npages << PAGE_SHIFT));
+
+	return left;
+}
+
+unsigned long iommufd_dirty_iova_length(struct iommufd_dirty_iter *iter)
+{
+	unsigned long left = iommufd_dirty_iter_bytes(iter);
+
+	return ((BITS_PER_BYTE * left) << iter->dirty.pgshift);
+}
+
+unsigned long iommufd_dirty_iova(struct iommufd_dirty_iter *iter)
+{
+	unsigned long skip = iter->bitmap_iter.iov_offset;
+
+	return iter->iova + ((BITS_PER_BYTE * skip) << iter->dirty.pgshift);
+}
+
+void iommufd_dirty_iter_advance(struct iommufd_dirty_iter *iter)
+{
+	iov_iter_advance(&iter->bitmap_iter, iommufd_dirty_iter_bytes(iter));
+}
+
+void iommufd_dirty_iter_put(struct iommufd_dirty_iter *iter)
+{
+	struct iommu_dirty_bitmap *dirty = &iter->dirty;
+
+	if (dirty->npages)
+		unpin_user_pages(dirty->pages, dirty->npages);
+}
+
+int iommufd_dirty_iter_get(struct iommufd_dirty_iter *iter)
+{
+	struct iommu_dirty_bitmap *dirty = &iter->dirty;
+	unsigned long npages;
+	unsigned long ret;
+	void *addr;
+
+	addr = iter->bitmap_iov.iov_base + iter->bitmap_iter.iov_offset;
+	npages = iov_iter_npages(&iter->bitmap_iter,
+				 PAGE_SIZE / sizeof(struct page *));
+
+	ret = pin_user_pages_fast((unsigned long) addr, npages,
+				  FOLL_WRITE, dirty->pages);
+	if (ret <= 0)
+		return -EINVAL;
+
+	dirty->npages = ret;
+	dirty->iova = iommufd_dirty_iova(iter);
+	dirty->start_offset = offset_in_page(addr);
+	return 0;
+}
+
+static int iommu_read_and_clear_dirty(struct iommu_domain *domain,
+				      struct iommufd_dirty_data *bitmap)
+{
+	const struct iommu_domain_ops *ops = domain->ops;
+	struct iommu_iotlb_gather gather;
+	struct iommufd_dirty_iter iter;
+	int ret = 0;
+
+	if (!ops || !ops->read_and_clear_dirty)
+		return -EOPNOTSUPP;
+
+	iommu_dirty_bitmap_init(&iter.dirty, bitmap->iova,
+				__ffs(bitmap->page_size), &gather);
+	ret = iommufd_dirty_iter_init(&iter, bitmap);
+	if (ret)
+		return -ENOMEM;
+
+	for (; iommufd_dirty_iter_done(&iter);
+	     iommufd_dirty_iter_advance(&iter)) {
+		ret = iommufd_dirty_iter_get(&iter);
+		if (ret)
+			break;
+
+		ret = ops->read_and_clear_dirty(domain,
+			iommufd_dirty_iova(&iter),
+			iommufd_dirty_iova_length(&iter), &iter.dirty);
+
+		iommufd_dirty_iter_put(&iter);
+
+		if (ret)
+			break;
+	}
+
+	iommu_iotlb_sync(domain, &gather);
+	iommufd_dirty_iter_free(&iter);
+
+	return ret;
+}
+
+int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
+				   struct iommu_domain *domain,
+				   struct iommufd_dirty_data *bitmap)
+{
+	unsigned long iova, length, iova_end;
+	struct iommu_domain *dom;
+	struct iopt_area *area;
+	unsigned long index;
+	int ret = -EOPNOTSUPP;
+
+	iova = bitmap->iova;
+	length = bitmap->length - 1;
+	if (check_add_overflow(iova, length, &iova_end))
+		return -EOVERFLOW;
+
+	down_read(&iopt->iova_rwsem);
+	area = iopt_find_exact_area(iopt, iova, iova_end);
+	if (!area) {
+		up_read(&iopt->iova_rwsem);
+		return -ENOENT;
+	}
+
+	if (!domain) {
+		down_read(&iopt->domains_rwsem);
+		xa_for_each(&iopt->domains, index, dom) {
+			ret = iommu_read_and_clear_dirty(dom, bitmap);
+			if (ret)
+				break;
+		}
+		up_read(&iopt->domains_rwsem);
+	} else {
+		ret = iommu_read_and_clear_dirty(domain, bitmap);
+	}
+
+	up_read(&iopt->iova_rwsem);
 	return ret;
 }
 
