@@ -15,6 +15,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
+#include <uapi/linux/iommufd.h>
 
 #include "io_pagetable.h"
 
@@ -323,6 +324,66 @@ int iopt_set_dirty_tracking(struct io_pagetable *iopt,
 		ret = ops->set_dirty_tracking(domain, enable);
 	up_write(&iopt->iova_rwsem);
 
+	return ret;
+}
+
+static int iommu_read_and_clear_dirty(struct iommu_domain *domain,
+				      struct iommufd_dirty_data *bitmap)
+{
+	const struct iommu_domain_ops *ops = domain->ops;
+	struct iommu_iotlb_gather gather;
+	struct iommu_dirty_bitmap dirty;
+	struct iova_bitmap_iter iter;
+	int ret = 0;
+
+	if (!ops || !ops->read_and_clear_dirty)
+		return -EOPNOTSUPP;
+
+	iommu_dirty_bitmap_init(&dirty, &iter.dirty, &gather);
+	ret = iova_bitmap_iter_init(&iter, bitmap->iova, bitmap->length,
+				    bitmap->page_size, bitmap->data);
+	if (ret)
+		return -ENOMEM;
+
+	for (; !iova_bitmap_iter_done(&iter) && !ret;
+	     ret = iova_bitmap_iter_advance(&iter)) {
+		ret = ops->read_and_clear_dirty(domain,
+			iova_bitmap_iova(&iter),
+			iova_bitmap_length(&iter), &dirty);
+
+		if (ret)
+			break;
+	}
+
+	iommu_iotlb_sync(domain, &gather);
+	iova_bitmap_iter_free(&iter);
+
+	return ret;
+}
+
+int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
+				   struct iommu_domain *domain,
+				   struct iommufd_dirty_data *bitmap)
+{
+	unsigned long iova, length, iova_end;
+	struct iopt_area *area;
+	int ret = -EOPNOTSUPP;
+
+	iova = bitmap->iova;
+	length = bitmap->length - 1;
+	if (check_add_overflow(iova, length, &iova_end))
+		return -EOVERFLOW;
+
+	down_read(&iopt->iova_rwsem);
+	area = iopt_find_exact_area(iopt, iova, iova_end);
+	if (!area) {
+		up_read(&iopt->iova_rwsem);
+		return -ENOENT;
+	}
+
+	ret = iommu_read_and_clear_dirty(domain, bitmap);
+
+	up_read(&iopt->iova_rwsem);
 	return ret;
 }
 
