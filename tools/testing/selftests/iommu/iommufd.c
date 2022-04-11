@@ -13,13 +13,18 @@
 #define __EXPORTED_HEADERS__
 #include <linux/iommufd.h>
 #include <linux/vfio.h>
+#include <linux/bitmap.h>
+#include <linux/bitops.h>
 #include "../../../../drivers/iommu/iommufd/iommufd_test.h"
+#define BITS_PER_BYTE 8
 
 static void *buffer;
+static void *bitmap;
 
 static unsigned long PAGE_SIZE;
 static unsigned long HUGEPAGE_SIZE;
 static unsigned long BUFFER_SIZE;
+static unsigned long BITMAP_SIZE;
 
 #define MOCK_PAGE_SIZE (PAGE_SIZE / 2)
 
@@ -52,6 +57,10 @@ static __attribute__((constructor)) void setup_sizes(void)
 	BUFFER_SIZE = PAGE_SIZE * 16;
 	rc = posix_memalign(&buffer, HUGEPAGE_SIZE, BUFFER_SIZE);
 	assert(rc || buffer || (uintptr_t)buffer % HUGEPAGE_SIZE == 0);
+
+	BITMAP_SIZE = BUFFER_SIZE / MOCK_PAGE_SIZE / BITS_PER_BYTE;
+	rc = posix_memalign(&bitmap, PAGE_SIZE, BUFFER_SIZE);
+	assert(rc || buffer || (uintptr_t)buffer % PAGE_SIZE == 0);
 }
 
 /*
@@ -544,6 +553,132 @@ TEST_F(iommufd_ioas, iova_ranges)
 	}
 	EXPECT_EQ(0, cmd->out_valid_iovas[1].start);
 	EXPECT_EQ(0, cmd->out_valid_iovas[1].last);
+}
+
+TEST_F(iommufd_ioas, dirty)
+{
+	struct iommu_ioas_map map_cmd = {
+		.size = sizeof(map_cmd),
+		.flags = IOMMU_IOAS_MAP_FIXED_IOVA,
+		.ioas_id = self->ioas_id,
+		.user_va = (uintptr_t)buffer,
+		.length = BUFFER_SIZE,
+		.iova = MOCK_APERTURE_START,
+	};
+	struct iommu_test_cmd mock_cmd = {
+		.size = sizeof(mock_cmd),
+		.op = IOMMU_TEST_OP_MOCK_DOMAIN,
+		.id = self->ioas_id,
+	};
+	struct iommu_hwpt_set_dirty set_dirty_cmd = {
+		.size = sizeof(set_dirty_cmd),
+		.flags = IOMMU_DIRTY_TRACKING_ENABLED,
+		.hwpt_id = self->ioas_id,
+	};
+	struct iommu_test_cmd dirty_cmd = {
+		.size = sizeof(dirty_cmd),
+		.op = IOMMU_TEST_OP_DIRTY,
+		.id = self->ioas_id,
+		.dirty = { .iova = MOCK_APERTURE_START,
+			   .length = BUFFER_SIZE,
+			   .page_size = MOCK_PAGE_SIZE,
+			   .uptr = (uintptr_t)bitmap },
+	};
+	struct iommu_hwpt_get_dirty_iova get_dirty_cmd = {
+		.size = sizeof(get_dirty_cmd),
+		.hwpt_id = self->ioas_id,
+		.bitmap = {
+			.iova = MOCK_APERTURE_START,
+			.length = BUFFER_SIZE,
+			.page_size = MOCK_PAGE_SIZE,
+			.data = (__u64 *)bitmap,
+		}
+	};
+	struct iommu_ioas_unmap_dirty unmap_dirty_cmd = {
+		.size = sizeof(unmap_dirty_cmd),
+		.ioas_id = self->ioas_id,
+		.bitmap = {
+			.iova = MOCK_APERTURE_START,
+			.length = BUFFER_SIZE,
+			.page_size = MOCK_PAGE_SIZE,
+			.data = (__u64 *)bitmap,
+		},
+	};
+	struct iommu_destroy destroy_cmd = { .size = sizeof(destroy_cmd) };
+	unsigned long i, count, nbits = BITMAP_SIZE * BITS_PER_BYTE;
+
+	/* Toggle dirty with a domain and a single map */
+	ASSERT_EQ(0, ioctl(self->fd, _IOMMU_TEST_CMD(IOMMU_TEST_OP_MOCK_DOMAIN),
+			   &mock_cmd));
+	ASSERT_EQ(0, ioctl(self->fd, IOMMU_IOAS_MAP, &map_cmd));
+
+	set_dirty_cmd.hwpt_id = mock_cmd.id;
+	ASSERT_EQ(0,
+		  ioctl(self->fd, IOMMU_HWPT_SET_DIRTY, &set_dirty_cmd));
+	EXPECT_ERRNO(EINVAL,
+		  ioctl(self->fd, IOMMU_HWPT_SET_DIRTY, &set_dirty_cmd));
+
+	/* Mark all even bits as dirty in the mock domain */
+	for (count = 0, i = 0; i < nbits; count += !(i%2), i++)
+		if (!(i % 2))
+			set_bit(i, (unsigned long *) bitmap);
+	ASSERT_EQ(count, BITMAP_SIZE * BITS_PER_BYTE / 2);
+
+	dirty_cmd.id = mock_cmd.id;
+	ASSERT_EQ(0,
+		  ioctl(self->fd, _IOMMU_TEST_CMD(IOMMU_TEST_OP_DIRTY),
+			&dirty_cmd));
+	ASSERT_EQ(BITMAP_SIZE * BITS_PER_BYTE / 2,
+		  dirty_cmd.dirty.out_nr_dirty);
+
+	get_dirty_cmd.hwpt_id = mock_cmd.id;
+	memset(bitmap, 0, BITMAP_SIZE);
+	ASSERT_EQ(0,
+		  ioctl(self->fd, IOMMU_HWPT_GET_DIRTY_IOVA, &get_dirty_cmd));
+
+	/* All even bits should be dirty */
+	for (count = 0, i = 0; i < nbits; count += !(i%2), i++)
+		ASSERT_EQ(!(i % 2), test_bit(i, (unsigned long *) bitmap));
+	ASSERT_EQ(count, dirty_cmd.dirty.out_nr_dirty);
+
+	memset(bitmap, 0, BITMAP_SIZE);
+	ASSERT_EQ(0,
+		  ioctl(self->fd, IOMMU_HWPT_GET_DIRTY_IOVA, &get_dirty_cmd));
+
+	/* Should be all zeroes */
+	for (i = 0; i < nbits; i++)
+		ASSERT_EQ(0, test_bit(i, (unsigned long *) bitmap));
+
+	/* Mark all even bits as dirty in the mock domain */
+	for (count = 0, i = 0; i < nbits; count += !(i%2), i++)
+		if (!(i % 2))
+			set_bit(i, (unsigned long *) bitmap);
+	ASSERT_EQ(count, BITMAP_SIZE * BITS_PER_BYTE / 2);
+	ASSERT_EQ(0,
+		  ioctl(self->fd, _IOMMU_TEST_CMD(IOMMU_TEST_OP_DIRTY),
+			&dirty_cmd));
+	ASSERT_EQ(BITMAP_SIZE * BITS_PER_BYTE / 2,
+		  dirty_cmd.dirty.out_nr_dirty);
+
+	memset(bitmap, 0, BITMAP_SIZE);
+	ASSERT_EQ(0,
+		  ioctl(self->fd, IOMMU_IOAS_UNMAP_DIRTY, &unmap_dirty_cmd));
+
+	/* All even bits should be dirty */
+	for (count = 0, i = 0; i < nbits; count += !(i%2), i++)
+		ASSERT_EQ(!(i % 2), test_bit(i, (unsigned long *) bitmap));
+	ASSERT_EQ(count, dirty_cmd.dirty.out_nr_dirty);
+
+	set_dirty_cmd.flags = IOMMU_DIRTY_TRACKING_DISABLED;
+	ASSERT_EQ(0,
+		     ioctl(self->fd, IOMMU_HWPT_SET_DIRTY, &set_dirty_cmd));
+	EXPECT_ERRNO(EINVAL,
+		     ioctl(self->fd, IOMMU_HWPT_SET_DIRTY, &set_dirty_cmd));
+
+	destroy_cmd.id = mock_cmd.mock_domain.device_id;
+	ASSERT_EQ(0, ioctl(self->fd, IOMMU_DESTROY, &destroy_cmd));
+	destroy_cmd.id = mock_cmd.id;
+	ASSERT_EQ(0, ioctl(self->fd, IOMMU_DESTROY, &destroy_cmd));
 }
 
 TEST_F(iommufd_ioas, access)

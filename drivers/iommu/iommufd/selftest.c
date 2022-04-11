@@ -13,6 +13,7 @@
 size_t iommufd_test_memory_limit = 65536;
 
 enum {
+	MOCK_DIRTY_TRACK = 1,
 	MOCK_IO_PAGE_SIZE = PAGE_SIZE / 2,
 
 	/*
@@ -25,9 +26,11 @@ enum {
 	_MOCK_PFN_START = MOCK_PFN_MASK + 1,
 	MOCK_PFN_START_IOVA = _MOCK_PFN_START,
 	MOCK_PFN_LAST_IOVA = _MOCK_PFN_START,
+	MOCK_PFN_DIRTY_IOVA = _MOCK_PFN_START << 1,
 };
 
 struct mock_iommu_domain {
+	unsigned long flags;
 	struct iommu_domain domain;
 	struct xarray pfns;
 };
@@ -133,7 +136,7 @@ static size_t mock_domain_unmap_pages(struct iommu_domain *domain,
 
 		for (cur = 0; cur != pgsize; cur += MOCK_IO_PAGE_SIZE) {
 			ent = xa_erase(&mock->pfns, iova / MOCK_IO_PAGE_SIZE);
-			WARN_ON(!ent);
+
 			/*
 			 * iommufd generates unmaps that must be a strict
 			 * superset of the map's performend So every starting
@@ -143,12 +146,12 @@ static size_t mock_domain_unmap_pages(struct iommu_domain *domain,
 			 * passed to map_pages
 			 */
 			if (first) {
-				WARN_ON(!(xa_to_value(ent) &
+				WARN_ON(ent && !(xa_to_value(ent) &
 					  MOCK_PFN_START_IOVA));
 				first = false;
 			}
 			if (pgcount == 1 && cur + MOCK_IO_PAGE_SIZE == pgsize)
-				WARN_ON(!(xa_to_value(ent) &
+				WARN_ON(ent && !(xa_to_value(ent) &
 					  MOCK_PFN_LAST_IOVA));
 
 			iova += MOCK_IO_PAGE_SIZE;
@@ -171,6 +174,75 @@ static phys_addr_t mock_domain_iova_to_phys(struct iommu_domain *domain,
 	return (xa_to_value(ent) & MOCK_PFN_MASK) * MOCK_IO_PAGE_SIZE;
 }
 
+static int mock_domain_set_dirty_tracking(struct iommu_domain *domain,
+					  bool enable)
+{
+	struct mock_iommu_domain *mock =
+		container_of(domain, struct mock_iommu_domain, domain);
+	unsigned long flags = mock->flags;
+
+	/* No change? */
+	if (!(enable ^ !!(flags & MOCK_DIRTY_TRACK)))
+		return -EINVAL;
+
+	flags = (enable ?
+		 flags | MOCK_DIRTY_TRACK : flags & ~MOCK_DIRTY_TRACK);
+
+	mock->flags = flags;
+	return 0;
+}
+
+static int mock_domain_read_and_clear_dirty(struct iommu_domain *domain,
+					    unsigned long iova, size_t size,
+					    struct iommu_dirty_bitmap *dirty)
+{
+	struct mock_iommu_domain *mock =
+		container_of(domain, struct mock_iommu_domain, domain);
+	unsigned long i, max = size / MOCK_IO_PAGE_SIZE;
+	void *ent, *old;
+
+	if (!(mock->flags & MOCK_DIRTY_TRACK))
+		return -EINVAL;
+
+	for (i = 0; i < max; i++) {
+		unsigned long cur = iova + i * MOCK_IO_PAGE_SIZE;
+
+		ent = xa_load(&mock->pfns, cur / MOCK_IO_PAGE_SIZE);
+		if (ent &&
+		    (xa_to_value(ent) & MOCK_PFN_DIRTY_IOVA)) {
+			unsigned long val;
+
+			/* Clear dirty */
+			val = xa_to_value(ent) & ~MOCK_PFN_DIRTY_IOVA;
+			old = xa_store(&mock->pfns, cur / MOCK_IO_PAGE_SIZE,
+				       xa_mk_value(val), GFP_KERNEL);
+			WARN_ON_ONCE(ent != old);
+			iommu_dirty_bitmap_record(dirty, cur, MOCK_IO_PAGE_SIZE);
+		}
+	}
+
+	return 0;
+}
+
+static size_t mock_domain_unmap_read_dirty(struct iommu_domain *domain,
+					   unsigned long iova, size_t page_size,
+					   struct iommu_iotlb_gather *gather,
+					   struct iommu_dirty_bitmap *dirty)
+{
+	struct mock_iommu_domain *mock =
+		container_of(domain, struct mock_iommu_domain, domain);
+	void *ent;
+
+	WARN_ON(page_size != MOCK_IO_PAGE_SIZE);
+
+	ent = xa_erase(&mock->pfns, iova / MOCK_IO_PAGE_SIZE);
+	if (ent && (xa_to_value(ent) & MOCK_PFN_DIRTY_IOVA) &&
+	    (mock->flags & MOCK_DIRTY_TRACK))
+		iommu_dirty_bitmap_record(dirty, iova, page_size);
+
+	return ent ? page_size : 0;
+}
+
 static const struct iommu_ops mock_ops = {
 	.owner = THIS_MODULE,
 	.pgsize_bitmap = MOCK_IO_PAGE_SIZE,
@@ -181,6 +253,9 @@ static const struct iommu_ops mock_ops = {
 			.map_pages = mock_domain_map_pages,
 			.unmap_pages = mock_domain_unmap_pages,
 			.iova_to_phys = mock_domain_iova_to_phys,
+			.set_dirty_tracking = mock_domain_set_dirty_tracking,
+			.read_and_clear_dirty = mock_domain_read_and_clear_dirty,
+			.unmap_read_dirty = mock_domain_unmap_read_dirty,
 		},
 };
 
@@ -442,6 +517,56 @@ out_abort:
 	return rc;
 }
 
+static int iommufd_test_dirty(struct iommufd_ucmd *ucmd,
+			      unsigned int mockpt_id, unsigned long iova,
+			      size_t length, unsigned long page_size,
+			      void __user *uptr, u32 flags)
+{
+	unsigned long i, max = length / page_size;
+	struct iommu_test_cmd *cmd = ucmd->cmd;
+	struct iommufd_hw_pagetable *hwpt;
+	struct mock_iommu_domain *mock;
+	int rc, count = 0;
+
+	if (iova % page_size || length % page_size ||
+	    (uintptr_t)uptr % page_size)
+		return -EINVAL;
+
+	hwpt = get_md_pagetable(ucmd, mockpt_id, &mock);
+	if (IS_ERR(hwpt))
+		return PTR_ERR(hwpt);
+
+	if (!(mock->flags & MOCK_DIRTY_TRACK)) {
+		rc = -EINVAL;
+		goto out_put;
+	}
+
+	for (i = 0; i < max; i++) {
+		unsigned long cur = iova + i * page_size;
+		void *ent, *old;
+
+		if (!test_bit(i, (unsigned long *) uptr))
+			continue;
+
+		ent = xa_load(&mock->pfns, cur / page_size);
+		if (ent) {
+			unsigned long val;
+
+			val = xa_to_value(ent) | MOCK_PFN_DIRTY_IOVA;
+			old = xa_store(&mock->pfns, cur / page_size,
+				       xa_mk_value(val), GFP_KERNEL);
+			WARN_ON_ONCE(ent != old);
+			count++;
+		}
+	}
+
+	cmd->dirty.out_nr_dirty = count;
+	rc = iommufd_ucmd_respond(ucmd, sizeof(*cmd));
+out_put:
+	iommufd_put_object(&hwpt->obj);
+	return rc;
+}
+
 void iommufd_selftest_destroy(struct iommufd_object *obj)
 {
 	struct selftest_obj *sobj = container_of(obj, struct selftest_obj, obj);
@@ -486,6 +611,12 @@ int iommufd_test(struct iommufd_ucmd *ucmd)
 			cmd->access_pages.length,
 			u64_to_user_ptr(cmd->access_pages.uptr),
 			cmd->access_pages.flags);
+	case IOMMU_TEST_OP_DIRTY:
+		return iommufd_test_dirty(
+			ucmd, cmd->id, cmd->dirty.iova,
+			cmd->dirty.length, cmd->dirty.page_size,
+			u64_to_user_ptr(cmd->dirty.uptr),
+			cmd->dirty.flags);
 	case IOMMU_TEST_OP_SET_TEMP_MEMORY_LIMIT:
 		iommufd_test_memory_limit = cmd->memory_limit.limit;
 		return 0;
