@@ -664,6 +664,22 @@ static inline void dma_clear_pte(struct dma_pte *pte)
 	pte->val = 0;
 }
 
+static inline bool dma_clear_pte_dirty(struct dma_pte *pte)
+{
+	bool dirty = false;
+	u64 val;
+
+	val = READ_ONCE(pte->val);
+
+	do {
+		val = cmpxchg64(&pte->val, val, 0);
+		if ((val & VTD_PAGE_MASK) & DMA_SL_PTE_DIRTY)
+			dirty = true;
+	} while (val);
+
+	return dirty;
+}
+
 static inline u64 dma_pte_addr(struct dma_pte *pte)
 {
 #ifdef CONFIG_64BIT

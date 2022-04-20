@@ -1317,7 +1317,8 @@ static void dma_pte_list_pagetables(struct dmar_domain *domain,
 static void dma_pte_clear_level(struct dmar_domain *domain, int level,
 				struct dma_pte *pte, unsigned long pfn,
 				unsigned long start_pfn, unsigned long last_pfn,
-				struct list_head *freelist)
+				struct list_head *freelist,
+				struct iommu_dirty_bitmap *dirty)
 {
 	struct dma_pte *first_pte = NULL, *last_pte = NULL;
 
@@ -1338,7 +1339,11 @@ static void dma_pte_clear_level(struct dmar_domain *domain, int level,
 			if (level > 1 && !dma_pte_superpage(pte))
 				dma_pte_list_pagetables(domain, level - 1, pte, freelist);
 
-			dma_clear_pte(pte);
+			if (dma_clear_pte_dirty(pte) && dirty)
+				iommu_dirty_bitmap_record(dirty,
+					pfn << VTD_PAGE_SHIFT,
+					level_size(level) << VTD_PAGE_SHIFT);
+
 			if (!first_pte)
 				first_pte = pte;
 			last_pte = pte;
@@ -1347,7 +1352,7 @@ static void dma_pte_clear_level(struct dmar_domain *domain, int level,
 			dma_pte_clear_level(domain, level - 1,
 					    phys_to_virt(dma_pte_addr(pte)),
 					    level_pfn, start_pfn, last_pfn,
-					    freelist);
+					    freelist, dirty);
 		}
 next:
 		pfn = level_pfn + level_size(level);
@@ -1362,7 +1367,8 @@ next:
    the page tables, and may have cached the intermediate levels. The
    pages can only be freed after the IOTLB flush has been done. */
 static void domain_unmap(struct dmar_domain *domain, unsigned long start_pfn,
-			 unsigned long last_pfn, struct list_head *freelist)
+			 unsigned long last_pfn, struct list_head *freelist,
+			 struct iommu_dirty_bitmap *dirty)
 {
 	BUG_ON(!domain_pfn_supported(domain, start_pfn));
 	BUG_ON(!domain_pfn_supported(domain, last_pfn));
@@ -1370,7 +1376,8 @@ static void domain_unmap(struct dmar_domain *domain, unsigned long start_pfn,
 
 	/* we don't need lock here; nobody else touches the iova range */
 	dma_pte_clear_level(domain, agaw_to_level(domain->agaw),
-			    domain->pgd, 0, start_pfn, last_pfn, freelist);
+			    domain->pgd, 0, start_pfn, last_pfn, freelist,
+			    dirty);
 
 	/* free pgd */
 	if (start_pfn == 0 && last_pfn == DOMAIN_MAX_PFN(domain->gaw)) {
@@ -2031,7 +2038,8 @@ static void domain_exit(struct dmar_domain *domain)
 	if (domain->pgd) {
 		LIST_HEAD(freelist);
 
-		domain_unmap(domain, 0, DOMAIN_MAX_PFN(domain->gaw), &freelist);
+		domain_unmap(domain, 0, DOMAIN_MAX_PFN(domain->gaw), &freelist,
+			     NULL);
 		put_pages_list(&freelist);
 	}
 
@@ -4125,7 +4133,8 @@ static int intel_iommu_memory_notifier(struct notifier_block *nb,
 			struct intel_iommu *iommu;
 			LIST_HEAD(freelist);
 
-			domain_unmap(si_domain, start_vpfn, last_vpfn, &freelist);
+			domain_unmap(si_domain, start_vpfn, last_vpfn,
+				     &freelist, NULL);
 
 			rcu_read_lock();
 			for_each_active_iommu(iommu, drhd)
@@ -4737,7 +4746,8 @@ static int intel_iommu_map_pages(struct iommu_domain *domain,
 
 static size_t intel_iommu_unmap(struct iommu_domain *domain,
 				unsigned long iova, size_t size,
-				struct iommu_iotlb_gather *gather)
+				struct iommu_iotlb_gather *gather,
+				struct iommu_dirty_bitmap *dirty)
 {
 	struct dmar_domain *dmar_domain = to_dmar_domain(domain);
 	unsigned long start_pfn, last_pfn;
@@ -4753,7 +4763,7 @@ static size_t intel_iommu_unmap(struct iommu_domain *domain,
 	start_pfn = iova >> VTD_PAGE_SHIFT;
 	last_pfn = (iova + size - 1) >> VTD_PAGE_SHIFT;
 
-	domain_unmap(dmar_domain, start_pfn, last_pfn, &gather->freelist);
+	domain_unmap(dmar_domain, start_pfn, last_pfn, &gather->freelist, dirty);
 
 	if (dmar_domain->max_addr == iova + size)
 		dmar_domain->max_addr = iova;
@@ -4771,7 +4781,19 @@ static size_t intel_iommu_unmap_pages(struct iommu_domain *domain,
 	unsigned long pgshift = __ffs(pgsize);
 	size_t size = pgcount << pgshift;
 
-	return intel_iommu_unmap(domain, iova, size, gather);
+	return intel_iommu_unmap(domain, iova, size, gather, NULL);
+}
+
+static size_t intel_iommu_unmap_read_dirty(struct iommu_domain *domain,
+					   unsigned long iova,
+					   size_t pgsize, size_t pgcount,
+					   struct iommu_iotlb_gather *gather,
+					   struct iommu_dirty_bitmap *dirty)
+{
+	unsigned long pgshift = __ffs(pgsize);
+	size_t size = pgcount << pgshift;
+
+	return intel_iommu_unmap(domain, iova, size, gather, dirty);
 }
 
 static void intel_iommu_tlb_sync(struct iommu_domain *domain,
@@ -5228,6 +5250,7 @@ const struct iommu_ops intel_iommu_ops = {
 		.free			= intel_iommu_domain_free,
 		.set_dirty_tracking	= intel_iommu_set_dirty_tracking,
 		.read_and_clear_dirty   = intel_iommu_read_and_clear_dirty,
+		.unmap_pages_read_dirty = intel_iommu_unmap_read_dirty,
 	}
 };
 
