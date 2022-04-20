@@ -48,6 +48,9 @@
 #define DMA_FL_PTE_DIRTY	BIT_ULL(6)
 #define DMA_FL_PTE_XD		BIT_ULL(63)
 
+#define DMA_SL_PTE_DIRTY_BIT	9
+#define DMA_SL_PTE_DIRTY	BIT_ULL(DMA_SL_PTE_DIRTY_BIT)
+
 #define ADDR_WIDTH_5LEVEL	(57)
 #define ADDR_WIDTH_4LEVEL	(48)
 
@@ -541,6 +544,7 @@ struct dmar_domain {
 	u8 iommu_coherency: 1;		/* indicate coherency of iommu access */
 	u8 force_snooping : 1;		/* Create IOPTEs with snoop control */
 	u8 set_pte_snp:1;
+	u8 dirty_tracking:1;		/* Dirty tracking is enabled */
 
 	spinlock_t lock;		/* Protect device tracking lists */
 	struct list_head devices;	/* all devices' list */
@@ -683,6 +687,17 @@ static inline u64 dma_pte_addr(struct dma_pte *pte)
 static inline bool dma_pte_present(struct dma_pte *pte)
 {
 	return (pte->val & 3) != 0;
+}
+
+static inline bool dma_sl_pte_dirty(struct dma_pte *pte)
+{
+	return (pte->val & DMA_SL_PTE_DIRTY) != 0;
+}
+
+static inline bool dma_sl_pte_test_and_clear_dirty(struct dma_pte *pte)
+{
+	return test_and_clear_bit(DMA_SL_PTE_DIRTY_BIT,
+				  (unsigned long *)&pte->val);
 }
 
 static inline bool dma_pte_superpage(struct dma_pte *pte)
