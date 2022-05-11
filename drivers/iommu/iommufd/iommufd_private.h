@@ -230,6 +230,7 @@ int iommufd_ioas_unmap(struct iommufd_ucmd *ucmd);
 int iommufd_vfio_ioas(struct iommufd_ucmd *ucmd);
 int iommufd_check_iova_range(struct iommufd_ioas *ioas,
 			     struct iommufd_dirty_data *bitmap);
+int iommufd_device_get_caps(struct iommufd_ucmd *ucmd);
 
 /*
  * A HW pagetable is called an iommu_domain inside the kernel. This user object

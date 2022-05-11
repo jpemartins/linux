@@ -134,6 +134,32 @@ bool iommufd_device_enforced_coherent(struct iommufd_device *idev)
 }
 EXPORT_SYMBOL_GPL(iommufd_device_enforced_coherent);
 
+int iommufd_device_get_caps(struct iommufd_ucmd *ucmd)
+{
+	struct iommu_device_caps *cmd = ucmd->cmd;
+	struct iommufd_object *obj;
+	struct iommufd_device *idev;
+	int rc;
+
+	obj = iommufd_get_object(ucmd->ictx, cmd->dev_id, IOMMUFD_OBJ_DEVICE);
+	if (IS_ERR(obj))
+		return PTR_ERR(obj);
+
+	idev = container_of(obj, struct iommufd_device, obj);
+
+	cmd->caps = 0;
+	if (device_iommu_capable(idev->dev, IOMMU_CAP_DIRTY))
+		cmd->caps |= IOMMUFD_CAP_DIRTY_TRACKING;
+
+	rc = iommufd_ucmd_respond(ucmd, sizeof(*cmd));
+	if (rc)
+		goto out_put;
+
+out_put:
+	iommufd_put_object(obj);
+	return rc;
+}
+
 static int iommufd_device_setup_msi(struct iommufd_device *idev,
 				    struct iommufd_hw_pagetable *hwpt,
 				    phys_addr_t sw_msi_start,
