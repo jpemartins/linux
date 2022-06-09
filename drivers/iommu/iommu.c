@@ -3239,3 +3239,26 @@ bool iommu_group_dma_owner_claimed(struct iommu_group *group)
 	return user;
 }
 EXPORT_SYMBOL_GPL(iommu_group_dma_owner_claimed);
+
+static void pgtble_page_free_rcu(struct rcu_head *rcu)
+{
+	struct page *page = container_of(rcu, struct page, rcu_head);
+
+	__free_pages(page, 0);
+}
+
+void iommu_free_pgtbl_pages(struct iommu_domain *domain,
+			    struct list_head *pages)
+{
+	struct page *page, *next;
+
+	if (!domain->concurrent_traversal) {
+		put_pages_list(pages);
+		return;
+	}
+
+	list_for_each_entry_safe(page, next, pages, lru) {
+		list_del(&page->lru);
+		call_rcu(&page->rcu_head, pgtble_page_free_rcu);
+	}
+}

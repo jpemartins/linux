@@ -95,6 +95,7 @@ struct iommu_domain {
 	void *handler_token;
 	struct iommu_domain_geometry geometry;
 	struct iommu_dma_cookie *iova_cookie;
+	unsigned long concurrent_traversal:1;
 };
 
 static inline bool iommu_is_dma_domain(struct iommu_domain *domain)
@@ -659,6 +660,12 @@ static inline void dev_iommu_priv_set(struct device *dev, void *priv)
 	dev->iommu->priv = priv;
 }
 
+static inline void domain_set_concurrent_traversal(struct iommu_domain *domain,
+						   bool value)
+{
+	domain->concurrent_traversal = value;
+}
+
 int iommu_probe_device(struct device *dev);
 void iommu_release_device(struct device *dev);
 
@@ -678,6 +685,8 @@ int iommu_group_claim_dma_owner(struct iommu_group *group, void *owner);
 void iommu_group_release_dma_owner(struct iommu_group *group);
 bool iommu_group_dma_owner_claimed(struct iommu_group *group);
 
+void iommu_free_pgtbl_pages(struct iommu_domain *domain,
+			    struct list_head *pages);
 #else /* CONFIG_IOMMU_API */
 
 struct iommu_ops {};
