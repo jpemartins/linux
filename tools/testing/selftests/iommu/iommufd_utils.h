@@ -48,7 +48,7 @@ static int _test_cmd_mock_domain(int fd, unsigned int ioas_id,
 		.size = sizeof(cmd),
 		.op = IOMMU_TEST_OP_MOCK_DOMAIN,
 		.id = ioas_id,
-		.mock_domain = {},
+		.mock_domain = { .dev_flags = stdev_flags },
 	};
 	int ret;
 

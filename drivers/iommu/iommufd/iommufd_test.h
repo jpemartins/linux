@@ -39,6 +39,10 @@ enum {
 	MOCK_FLAGS_ACCESS_CREATE_NEEDS_PIN_PAGES = 1 << 0,
 };
 
+enum {
+	MOCK_FLAGS_DEVICE_NO_DIRTY = 1 << 0,
+};
+
 struct iommu_test_cmd {
 	__u32 size;
 	__u32 op;
@@ -50,6 +54,7 @@ struct iommu_test_cmd {
 			__aligned_u64 length;
 		} add_reserved;
 		struct {
+			__u32 dev_flags;
 			__u32 out_stdev_id;
 			__u32 out_hwpt_id;
 			/* out_idev_id is the standard iommufd_bind object */
