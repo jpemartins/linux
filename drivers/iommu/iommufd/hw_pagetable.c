@@ -55,12 +55,26 @@ int iommufd_hw_pagetable_enforce_cc(struct iommufd_hw_pagetable *hwpt)
 	return 0;
 }
 
+int iommufd_hw_pagetable_enforce_dirty(struct iommufd_hw_pagetable *hwpt,
+				       struct iommufd_device *idev)
+{
+	hwpt->enforce_dirty =
+		!iommu_domain_set_flags(hwpt->domain, idev->dev->bus,
+					IOMMU_DOMAIN_F_ENFORCE_DIRTY);
+	if (!hwpt->enforce_dirty)
+		return -EINVAL;
+
+	return 0;
+}
+
 /**
  * iommufd_hw_pagetable_alloc() - Get an iommu_domain for a device
  * @ictx: iommufd context
  * @ioas: IOAS to associate the domain with
  * @idev: Device to get an iommu_domain for
  * @immediate_attach: True if idev should be attached to the hwpt
+ * @enforce_dirty: True if dirty tracking support should be enforce
+ *                 on device attach
  *
  * Allocate a new iommu_domain and return it as a hw_pagetable. The HWPT
  * will be linked to the given ioas and upon return the underlying iommu_domain
@@ -72,7 +86,8 @@ int iommufd_hw_pagetable_enforce_cc(struct iommufd_hw_pagetable *hwpt)
  */
 struct iommufd_hw_pagetable *
 iommufd_hw_pagetable_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
-			   struct iommufd_device *idev, bool immediate_attach)
+			   struct iommufd_device *idev, bool immediate_attach,
+			   bool enforce_dirty)
 {
 	struct iommufd_hw_pagetable *hwpt;
 	int rc;
@@ -104,6 +119,12 @@ iommufd_hw_pagetable_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
 	if (idev->enforce_cache_coherency) {
 		rc = iommufd_hw_pagetable_enforce_cc(hwpt);
 		if (WARN_ON(rc))
+			goto out_abort;
+	}
+
+	if (enforce_dirty) {
+		rc = iommufd_hw_pagetable_enforce_dirty(hwpt, idev);
+		if (rc)
 			goto out_abort;
 	}
 
@@ -141,7 +162,8 @@ int iommufd_hwpt_alloc(struct iommufd_ucmd *ucmd)
 	struct iommufd_ioas *ioas;
 	int rc;
 
-	if (cmd->flags || cmd->__reserved)
+	if ((cmd->flags & ~(IOMMU_HWPT_ALLOC_ENFORCE_DIRTY)) ||
+	    cmd->__reserved)
 		return -EOPNOTSUPP;
 
 	idev = iommufd_get_device(ucmd, cmd->dev_id);
@@ -155,7 +177,8 @@ int iommufd_hwpt_alloc(struct iommufd_ucmd *ucmd)
 	}
 
 	mutex_lock(&ioas->mutex);
-	hwpt = iommufd_hw_pagetable_alloc(ucmd->ictx, ioas, idev, false);
+	hwpt = iommufd_hw_pagetable_alloc(ucmd->ictx, ioas, idev, false,
+				  cmd->flags & IOMMU_HWPT_ALLOC_ENFORCE_DIRTY);
 	if (IS_ERR(hwpt)) {
 		rc = PTR_ERR(hwpt);
 		goto out_unlock;
