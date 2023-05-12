@@ -125,6 +125,24 @@ static int _test_cmd_hwpt_alloc(int fd, __u32 device_id, __u32 pt_id,
 	ASSERT_EQ(0, _test_cmd_hwpt_alloc(self->fd, device_id, pt_id, flags, \
 					  hwpt_id))
 
+static int _test_cmd_set_dirty(int fd, __u32 hwpt_id, bool enabled)
+{
+	struct iommu_hwpt_set_dirty cmd = {
+		.size = sizeof(cmd),
+		.flags = enabled ? IOMMU_DIRTY_TRACKING_ENABLED :
+				   IOMMU_DIRTY_TRACKING_DISABLED,
+		.hwpt_id = hwpt_id,
+	};
+	int ret;
+
+	ret = ioctl(fd, IOMMU_HWPT_SET_DIRTY, &cmd);
+	if (ret)
+		return ret;
+	return 0;
+}
+
+#define test_cmd_set_dirty(hwpt_id, enabled) \
+	ASSERT_EQ(0, _test_cmd_set_dirty(self->fd, hwpt_id, enabled))
 static int _test_cmd_create_access(int fd, unsigned int ioas_id,
 				   __u32 *access_id, unsigned int flags)
 {
