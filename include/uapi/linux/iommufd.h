@@ -352,9 +352,12 @@ struct iommu_vfio_ioas {
  * @IOMMU_HWPT_ALLOC_NEST_PARENT: If set, allocate a domain which can serve
  *                                as the parent domain in the nesting
  *                                configuration.
+ * @IOMMU_HWPT_ALLOC_ENFORCE_DIRTY: Dirty tracking support for device IOMMU is
+ *                                enforced on device attachment
  */
 enum iommufd_hwpt_alloc_flags {
 	IOMMU_HWPT_ALLOC_NEST_PARENT = 1 << 0,
+	IOMMU_HWPT_ALLOC_ENFORCE_DIRTY = 1 << 1,
 };
 
 /**
