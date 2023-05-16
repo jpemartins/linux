@@ -146,6 +146,25 @@ static int _test_cmd_set_dirty(int fd, __u32 hwpt_id, bool enabled)
 #define test_cmd_set_dirty(hwpt_id, enabled) \
 	ASSERT_EQ(0, _test_cmd_set_dirty(self->fd, hwpt_id, enabled))
 
+static int _test_cmd_get_device_caps(int fd, __u32 dev_id, __u64 capability)
+{
+	struct iommu_device_get_caps cmd = {
+		.size = sizeof(cmd),
+		.dev_id = dev_id,
+	};
+	int ret;
+
+	ret = ioctl(fd, IOMMU_DEVICE_GET_CAPS, &cmd);
+	if (ret)
+		return ret;
+
+	return cmd.out_caps & capability;
+}
+
+#define test_cmd_get_device_caps(dev_id, expected) \
+	ASSERT_EQ(expected, _test_cmd_get_device_caps(self->fd, dev_id, \
+						      expected))
+
 static int _test_cmd_get_dirty_iova(int fd, __u32 hwpt_id, size_t length,
 				    __u64 iova, size_t page_size, __u64 *bitmap)
 {
