@@ -525,7 +525,8 @@ static void teardown_iommufd(int fd, struct __test_metadata *_metadata)
 
 /* @data can be NULL */
 static int _test_cmd_get_hw_info(int fd, __u32 device_id,
-				 void *data, size_t data_len)
+				 void *data, size_t data_len,
+				 uint32_t *capabilities)
 {
 	struct iommu_test_hw_info *info = (struct iommu_test_hw_info *)data;
 	struct iommu_hw_info cmd = {
@@ -533,6 +534,7 @@ static int _test_cmd_get_hw_info(int fd, __u32 device_id,
 		.dev_id = device_id,
 		.data_len = data_len,
 		.data_uptr = (uint64_t)data,
+		.out_capabilities = 0,
 	};
 	int ret;
 
@@ -569,14 +571,20 @@ static int _test_cmd_get_hw_info(int fd, __u32 device_id,
 			assert(!info->flags);
 	}
 
+	if (capabilities)
+		*capabilities = cmd.out_capabilities;
+
 	return 0;
 }
 
 #define test_cmd_get_hw_info(device_id, data, data_len)         \
 	ASSERT_EQ(0, _test_cmd_get_hw_info(self->fd, device_id, \
-					   data, data_len))
+					   data, data_len, NULL))
 
 #define test_err_get_hw_info(_errno, device_id, data, data_len) \
 	EXPECT_ERRNO(_errno,                                    \
 		     _test_cmd_get_hw_info(self->fd, device_id, \
-					   data, data_len))
+					   data, data_len, NULL))
+
+#define test_cmd_get_hw_capabilities(device_id, caps, mask)     \
+	ASSERT_EQ(0, _test_cmd_get_hw_info(self->fd, device_id, NULL, 0, &caps))
