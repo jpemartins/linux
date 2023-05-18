@@ -2029,6 +2029,8 @@ static bool arm_smmu_capable(struct device *dev, enum iommu_cap cap)
 	case IOMMU_CAP_NOEXEC:
 	case IOMMU_CAP_DEFERRED_FLUSH:
 		return true;
+	case IOMMU_CAP_DIRTY:
+		return arm_smmu_dbm_capable(master->smmu);
 	default:
 		return false;
 	}
@@ -2454,6 +2456,9 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 	master = dev_iommu_priv_get(dev);
 	smmu = master->smmu;
+
+	if (domain->dirty_ops && !arm_smmu_dbm_capable(smmu))
+		return -EINVAL;
 
 	/*
 	 * Checking that SVA is disabled ensures that this device isn't bound to
@@ -2945,6 +2950,7 @@ arm_smmu_domain_alloc_user(struct device *dev, u32 flags)
 	bool enforce_dirty = flags & IOMMU_HWPT_ALLOC_ENFORCE_DIRTY;
 	struct arm_smmu_master *master = dev_iommu_priv_get(dev);
 	unsigned type = IOMMU_DOMAIN_UNMANAGED;
+	struct iommu_domain *domain;
 
 	if (!master)
 		return ERR_PTR(-ENODEV);
@@ -2952,7 +2958,13 @@ arm_smmu_domain_alloc_user(struct device *dev, u32 flags)
 	if (flags & IOMMU_HWPT_ALLOC_NEST_PARENT)
 		return ERR_PTR(-EOPNOTSUPP);
 
-	return arm_smmu_domain_alloc(type);
+	if (enforce_dirty && !device_iommu_capable(dev, IOMMU_CAP_DIRTY))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	domain = arm_smmu_domain_alloc(type);
+	if (domain && enforce_dirty)
+		domain->dirty_ops = &arm_smmu_dirty_ops;
+	return domain;
 }
 
 static struct iommu_ops arm_smmu_ops = {
